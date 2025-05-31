@@ -852,14 +852,47 @@ def main():
         # Verificar se há modelo disponível - usar session_state primeiro
         if 'trained_model' in st.session_state:
             model_data = st.session_state.trained_model
+            st.success("✅ Modelo carregado da sessão")
         else:
             model_data = load_latest_model()
             if model_data:
                 st.session_state.trained_model = model_data
+                st.success("✅ Modelo carregado do arquivo")
         
         if not model_data:
             st.warning("⚠️ Treine um modelo primeiro na aba 'Treinar Modelo'")
         else:
+            # Mostrar informações do modelo
+            st.info(f"🤖 Modelo: {model_data.get('training_date', 'Unknown')}")
+            st.info(f"📊 Times no banco: {len(model_data.get('team_stats', {}))}")
+            
+            # Buscar jogos do dia
+            date_str = selected_date.strftime('%Y-%m-%d')
+            
+            with st.spinner("🔍 Buscando jogos do dia..."):
+                fixtures = get_fixtures_cached(date_str)
+                
+            # Debug - mostrar quantos jogos foram encontrados
+            st.write(f"Debug: {len(fixtures)} jogos encontrados para {date_str}")
+            
+            if not fixtures:
+                st.info("📅 Nenhum jogo encontrado para esta data")
+                
+                # Sugestões
+                st.info("""
+                💡 Sugestões:
+                1. Tente uma data diferente (hoje ou amanhã)
+                2. Verifique se é dia de jogos (normalmente quartas, sábados e domingos)
+                3. Alguns jogos podem ainda não estar disponíveis na API
+                """)
+                
+                # Mostrar botão para testar com data de hoje
+                if st.button("🔄 Buscar jogos de hoje"):
+                    today = datetime.now().date()
+                    today_str = today.strftime('%Y-%m-%d')
+                    fixtures_today = get_fixtures_cached(today_str)
+                    st.write(f"Jogos de hoje ({today_str}): {len(fixtures_today)} encontrados")
+            else:
             # Buscar jogos do dia
             date_str = selected_date.strftime('%Y-%m-%d')
             
