@@ -401,6 +401,16 @@ st.markdown("""
         text-shadow: 1px 1px 2px rgba(255, 107, 107, 0.2);
     }
     
+    /* Status de conexão */
+    .connection-status {
+        background: #e0e5ec;
+        padding: 0.5rem 1rem;
+        border-radius: 10px;
+        margin: 0.5rem 0;
+        box-shadow: inset 2px 2px 4px #c8d0e7, inset -2px -2px 4px #f8ffff;
+        font-size: 0.85rem;
+    }
+    
     /* Responsividade */
     @media (max-width: 768px) {
         .main-header {
@@ -446,15 +456,37 @@ def get_api_headers():
         'x-apisports-key': API_KEY
     }
 
+def test_api_connection():
+    """Testa a conectividade com a API"""
+    try:
+        headers = get_api_headers()
+        response = requests.get(
+            f'{API_BASE_URL}/status',
+            headers=headers,
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            return True, "Conexão OK"
+        else:
+            return False, f"Status HTTP: {response.status_code}"
+            
+    except requests.exceptions.Timeout:
+        return False, "Timeout - conexão lenta"
+    except requests.exceptions.ConnectionError:
+        return False, "Erro de conexão - verifique internet"
+    except Exception as e:
+        return False, f"Erro: {str(e)}"
+
 def check_api_status():
-    """Verifica o status e limites da API"""
+    """Verifica o status e limites da API com tratamento robusto"""
     headers = get_api_headers()
     
     try:
         response = requests.get(
             f'{API_BASE_URL}/status',
             headers=headers,
-            timeout=10
+            timeout=15
         )
         
         if response.status_code == 200:
@@ -482,40 +514,81 @@ def check_api_status():
                 return False, 0, error_msg
         else:
             return False, 0, f"Status Code: {response.status_code}"
+    except requests.exceptions.Timeout:
+        return False, 0, "Timeout - conexão lenta"
+    except requests.exceptions.ConnectionError:
+        return False, 0, "Erro de conexão"
     except Exception as e:
         return False, 0, str(e)
 
-@st.cache_data(ttl=3600)
-def get_fixtures_cached(date_str):
-    """Busca jogos com cache de 1 hora"""
-    return get_fixtures(date_str)
-
-def get_fixtures(date_str):
-    """Busca jogos da API-Football"""
+def get_fixtures_with_retry(date_str, max_retries=3):
+    """Busca jogos da API com retry automático para tratar erros de conexão"""
     headers = get_api_headers()
     
-    try:
-        response = requests.get(
-            f'{API_BASE_URL}/fixtures',
-            headers=headers,
-            params={'date': date_str},
-            timeout=20
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(
+                f'{API_BASE_URL}/fixtures',
+                headers=headers,
+                params={'date': date_str},
+                timeout=30,
+                stream=False
+            )
             
-            if 'errors' in data and data['errors']:
-                st.error(f"Erro da API: {data['errors']}")
+            if response.status_code == 200:
+                try:
+                    data = response.json()
+                    
+                    if 'errors' in data and data['errors']:
+                        if attempt == 0:  # Só mostrar erro na primeira tentativa
+                            st.warning(f"Erro da API para {date_str}: {data['errors']}")
+                        return []
+                    
+                    fixtures = data.get('response', [])
+                    return fixtures
+                    
+                except Exception as json_error:
+                    if attempt < max_retries - 1:
+                        time.sleep(2 ** attempt)
+                        continue
+                    else:
+                        return []
+            else:
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                else:
+                    return []
+                    
+        except requests.exceptions.Timeout:
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            else:
                 return []
-            
-            fixtures = data.get('response', [])
-            return fixtures
-        else:
-            st.error(f"Erro API: {response.status_code}")
-            return []
-    except Exception as e:
-        st.error(f"Erro de conexão: {str(e)}")
+                
+        except requests.exceptions.ConnectionError:
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            else:
+                return []
+                
+        except Exception:
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            else:
+                return []
+    
+    return []
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_fixtures_cached_robust(date_str):
+    """Busca jogos com cache robusto"""
+    try:
+        return get_fixtures_with_retry(date_str)
+    except Exception:
         return []
 
 def load_historical_data():
@@ -538,13 +611,13 @@ def load_historical_data():
                 if 'ht_home' in df.columns and 'ht_away' in df.columns:
                     df['over_05'] = (df['ht_home'] + df['ht_away']) > 0
                 return df, f"✅ {len(df)} jogos carregados do arquivo local"
-            except Exception as e:
+            except Exception:
                 continue
     
     return None, "❌ Nenhum arquivo de dados históricos encontrado"
 
-def collect_historical_data(days=30, use_cached=True):
-    """Coleta dados históricos para ML"""
+def collect_historical_data_robust(days=30, use_cached=True):
+    """Coleta dados históricos com tratamento robusto de erros"""
     if use_cached:
         df, message = load_historical_data()
         if df is not None:
@@ -556,34 +629,76 @@ def collect_historical_data(days=30, use_cached=True):
                     st.info(f"📊 Filtrado para {len(df)} jogos dos últimos {days} dias")
             return df
     
-    # Se não houver cache, buscar da API
+    # Teste de conexão antes de começar
+    conn_ok, conn_msg = test_api_connection()
+    if not conn_ok:
+        st.error(f"❌ Problema de conectividade: {conn_msg}")
+        st.info("💡 Tente usar 'Usar dados em cache' ou verificar sua internet")
+        return pd.DataFrame()
+    
     all_data = []
     progress_bar = st.progress(0)
     status_text = st.empty()
+    
+    consecutive_errors = 0
+    max_consecutive_errors = 5
+    total_requests = 0
+    successful_requests = 0
     
     for i in range(days):
         date = datetime.now() - timedelta(days=i+1)
         date_str = date.strftime('%Y-%m-%d')
         status_text.text(f"📊 Coletando dados ML: {date.strftime('%d/%m/%Y')} ({i+1}/{days})")
         
-        fixtures = get_fixtures(date_str)
+        try:
+            fixtures = get_fixtures_with_retry(date_str)
+            total_requests += 1
+            
+            if fixtures:
+                successful_requests += 1
+                consecutive_errors = 0
+                
+                for match in fixtures:
+                    try:
+                        if match['fixture']['status']['short'] == 'FT' and match.get('score', {}).get('halftime'):
+                            match_data = extract_match_features(match)
+                            if match_data:
+                                all_data.append(match_data)
+                    except Exception:
+                        continue
+                        
+            else:
+                consecutive_errors += 1
+                if consecutive_errors >= max_consecutive_errors:
+                    st.warning(f"⚠️ Muitos erros consecutivos ({consecutive_errors}). Parando coleta.")
+                    break
         
-        for match in fixtures:
-            if match['fixture']['status']['short'] == 'FT' and match.get('score', {}).get('halftime'):
-                match_data = extract_match_features(match)
-                if match_data:
-                    all_data.append(match_data)
+        except Exception:
+            consecutive_errors += 1
+            if consecutive_errors >= max_consecutive_errors:
+                st.warning(f"⚠️ Muitos erros consecutivos. Parando coleta.")
+                break
         
         progress_bar.progress((i+1)/days)
-        time.sleep(0.3)
+        
+        if i < days - 1:
+            time.sleep(0.5)
     
     progress_bar.empty()
     status_text.empty()
     
+    if total_requests > 0:
+        success_rate = (successful_requests / total_requests) * 100
+        st.info(f"📊 Coleta concluída: {successful_requests}/{total_requests} dias ({success_rate:.1f}% sucesso)")
+        st.info(f"🎯 Total de jogos coletados: {len(all_data)}")
+    
+    if len(all_data) < 100:
+        st.warning("⚠️ Poucos dados coletados. Recomendo usar dados em cache ou tentar novamente.")
+    
     return pd.DataFrame(all_data)
 
 def extract_match_features(match):
-    """Extrai features para ML"""
+    """Extrai features para ML com tratamento de erro"""
     try:
         home_team = match['teams']['home']['name']
         away_team = match['teams']['away']['name']
@@ -614,12 +729,11 @@ def extract_match_features(match):
         }
         
         return features
-    except:
+    except Exception:
         return None
 
 def prepare_ml_features(df):
     """Prepara features avançadas para o modelo ML incluindo coeficiente de variação e combined score"""
-    # Garantir que temos as colunas necessárias
     if 'over_05' not in df.columns:
         if 'ht_home_goals' in df.columns and 'ht_away_goals' in df.columns:
             df['over_05'] = (df['ht_home_goals'] + df['ht_away_goals']) > 0
@@ -632,10 +746,8 @@ def prepare_ml_features(df):
         elif 'ht_home' in df.columns and 'ht_away' in df.columns:
             df['ht_total_goals'] = df['ht_home'] + df['ht_away']
     
-    # Estatísticas por time com features avançadas
     team_stats = {}
     
-    # Inicializar todos os times
     for idx, row in df.iterrows():
         home_team = row['home_team_id']
         away_team = row['away_team_id']
@@ -670,7 +782,6 @@ def prepare_ml_features(df):
         home_id = row['home_team_id']
         away_id = row['away_team_id']
         
-        # Features básicas do time da casa
         home_stats = team_stats[home_id]
         home_over_rate = home_stats['over_05'] / max(home_stats['games'], 1)
         home_over_rate_binary = home_stats['over_05_binary'] / max(home_stats['games'], 1)
@@ -679,7 +790,6 @@ def prepare_ml_features(df):
         home_home_over_rate = home_stats['home_over'] / max(home_stats['home_games'], 1)
         home_home_over_rate_binary = home_stats['home_over_binary'] / max(home_stats['home_games'], 1)
         
-        # Features básicas do time visitante
         away_stats = team_stats[away_id]
         away_over_rate = away_stats['over_05'] / max(away_stats['games'], 1)
         away_over_rate_binary = away_stats['over_05_binary'] / max(away_stats['games'], 1)
@@ -688,12 +798,10 @@ def prepare_ml_features(df):
         away_away_over_rate = away_stats['away_over'] / max(away_stats['away_games'], 1)
         away_away_over_rate_binary = away_stats['away_over_binary'] / max(away_stats['away_games'], 1)
         
-        # Features da liga
         league_games = df[df['league_id'] == row['league_id']]
         league_over_rate = league_games['over_05'].mean() if len(league_games) > 0 else 0.5
         league_over_rate_binary = (league_games['over_05'] > 0).mean() if len(league_games) > 0 else 0.5
         
-        # Features avançadas
         if len(home_stats['goals_list']) > 1:
             home_goals_cv = np.std(home_stats['goals_list']) / (np.mean(home_stats['goals_list']) + 0.01)
             home_consistency = 1 / (1 + home_goals_cv)
@@ -708,19 +816,16 @@ def prepare_ml_features(df):
             away_consistency = 0.5
             away_goals_cv = 1.0
         
-        # Combined Score
         home_strength_binary = home_over_rate_binary * home_avg_goals_capped * home_consistency
         away_strength_binary = away_over_rate_binary * away_avg_goals_capped * away_consistency
         combined_score_binary = home_strength_binary + away_strength_binary
         
-        # Momentum
         home_recent = home_stats['over_list'][-5:] if len(home_stats['over_list']) >= 5 else home_stats['over_list']
         away_recent = away_stats['over_list'][-5:] if len(away_stats['over_list']) >= 5 else away_stats['over_list']
         
         home_momentum = sum([1 if x > 0 else 0 for x in home_recent]) / len(home_recent) if home_recent else home_over_rate_binary
         away_momentum = sum([1 if x > 0 else 0 for x in away_recent]) / len(away_recent) if away_recent else away_over_rate_binary
         
-        # Criar feature row
         feature_row = {
             'home_over_rate': home_over_rate,
             'home_avg_goals': home_avg_goals,
@@ -759,12 +864,10 @@ def prepare_ml_features(df):
         
         features.append(feature_row)
         
-        # Atualizar stats após o jogo
         ht_home_goals = row.get('ht_home_goals', row.get('ht_home', 0))
         ht_away_goals = row.get('ht_away_goals', row.get('ht_away', 0))
         ht_total = ht_home_goals + ht_away_goals
         
-        # Stats do time da casa
         team_stats[home_id]['games'] += 1
         team_stats[home_id]['over_05'] += row['over_05']
         team_stats[home_id]['over_05_binary'] += 1 if row['over_05'] > 0 else 0
@@ -781,7 +884,6 @@ def prepare_ml_features(df):
         if ht_total > 2:
             team_stats[home_id]['extreme_games'] += 1
         
-        # Stats do time visitante
         team_stats[away_id]['games'] += 1
         team_stats[away_id]['over_05'] += row['over_05']
         team_stats[away_id]['over_05_binary'] += 1 if row['over_05'] > 0 else 0
@@ -800,115 +902,123 @@ def prepare_ml_features(df):
     
     return pd.DataFrame(features), team_stats
 
-def train_ml_model(df):
-    """Treina o modelo de ML com features avançadas"""
-    st.info("🧠 Preparando features avançadas (coeficiente de variação, combined score, momentum)...")
-    features_df, team_stats = prepare_ml_features(df)
+def train_ml_model_robust(df):
+    """Versão robusta do treinamento com verificações"""
     
-    league_analysis = analyze_leagues(df)
+    # Verificar se temos dados suficientes
+    if len(df) < 100:
+        st.error("❌ Dados insuficientes para treinamento (mínimo 100 jogos)")
+        st.info("💡 Tente coletar mais dias ou use dados em cache")
+        return None, None
     
-    feature_cols = [col for col in features_df.columns if col != 'target']
-    X = features_df[feature_cols]
-    y = features_df['target']
-    
-    st.info(f"📊 Total de features: {len(feature_cols)}")
-    st.info(f"🎯 Features incluem: Coeficiente de Variação, Combined Score, Momentum, Outliers")
-    
-    # Dividir dados
-    X_temp, X_test, y_temp, y_test = train_test_split(X, y, test_size=0.15, random_state=42, stratify=y)
-    X_train, X_val, y_train, y_val = train_test_split(X_temp, y_temp, test_size=0.176, random_state=42, stratify=y_temp)
-    
-    # Normalizar features
-    scaler = StandardScaler()
-    X_train_scaled = scaler.fit_transform(X_train)
-    X_val_scaled = scaler.transform(X_val)
-    X_test_scaled = scaler.transform(X_test)
-    
-    # Treinar modelos
-    models = {
-        'RandomForest': RandomForestClassifier(
-            n_estimators=300,
-            max_depth=12,
-            min_samples_split=3,
-            min_samples_leaf=2,
-            random_state=42, 
-            n_jobs=-1
-        ),
-        'GradientBoosting': GradientBoostingClassifier(
-            n_estimators=300,
-            learning_rate=0.08,
-            max_depth=6,
-            min_samples_split=3,
-            random_state=42
-        )
-    }
-    
-    best_model = None
-    best_score = 0
-    results = {}
-    
-    st.info("🧠 Treinando modelos avançados...")
-    for name, model in models.items():
-        with st.spinner(f"Treinando {name}..."):
-            model.fit(X_train_scaled, y_train)
-            
-            val_pred = model.predict(X_val_scaled)
-            val_acc = accuracy_score(y_val, val_pred)
-            
-            test_pred = model.predict(X_test_scaled)
-            test_acc = accuracy_score(y_test, test_pred)
-            test_prec = precision_score(y_test, test_pred)
-            test_rec = recall_score(y_test, test_pred)
-            test_f1 = f1_score(y_test, test_pred)
-            
-            results[name] = {
-                'val_accuracy': val_acc,
-                'test_accuracy': test_acc,
-                'precision': test_prec,
-                'recall': test_rec,
-                'f1_score': test_f1
-            }
-            
-            st.success(f"✅ {name}: F1-Score = {test_f1:.1%} | Acurácia = {test_acc:.1%}")
-            
-            if test_f1 > best_score:
-                best_score = test_f1
-                best_model = model
-    
-    # Salvar modelo
-    model_data = {
-        'model': best_model,
-        'scaler': scaler,
-        'feature_cols': feature_cols,
-        'team_stats': team_stats,
-        'league_analysis': league_analysis,
-        'results': results,
-        'training_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'total_samples': len(df),
-        'training_days': len(df['date'].unique()) if 'date' in df.columns else 0,
-        'features_count': len(feature_cols),
-        'advanced_features': True
-    }
-    
-    st.session_state.trained_model = model_data
-    st.session_state.model_trained = True
-    
-    # Tentar salvar em arquivo
     try:
-        for directory in [MODEL_DIR, "/tmp/models"]:
-            try:
-                if not os.path.exists(directory):
-                    os.makedirs(directory)
-                model_path = os.path.join(directory, f"model_advanced_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pkl")
-                joblib.dump(model_data, model_path)
-                st.success(f"💾 Modelo salvo: {model_path}")
-                break
-            except:
-                pass
-    except:
-        pass
-    
-    return model_data, results
+        st.info("🧠 Preparando features avançadas (coeficiente de variação, combined score, momentum)...")
+        features_df, team_stats = prepare_ml_features(df)
+        
+        league_analysis = analyze_leagues(df)
+        
+        feature_cols = [col for col in features_df.columns if col != 'target']
+        X = features_df[feature_cols]
+        y = features_df['target']
+        
+        st.info(f"📊 Total de features: {len(feature_cols)}")
+        st.info(f"🎯 Features incluem: Coeficiente de Variação, Combined Score, Momentum, Outliers")
+        
+        X_temp, X_test, y_temp, y_test = train_test_split(X, y, test_size=0.15, random_state=42, stratify=y)
+        X_train, X_val, y_train, y_val = train_test_split(X_temp, y_temp, test_size=0.176, random_state=42, stratify=y_temp)
+        
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_val_scaled = scaler.transform(X_val)
+        X_test_scaled = scaler.transform(X_test)
+        
+        models = {
+            'RandomForest': RandomForestClassifier(
+                n_estimators=300,
+                max_depth=12,
+                min_samples_split=3,
+                min_samples_leaf=2,
+                random_state=42, 
+                n_jobs=-1
+            ),
+            'GradientBoosting': GradientBoostingClassifier(
+                n_estimators=300,
+                learning_rate=0.08,
+                max_depth=6,
+                min_samples_split=3,
+                random_state=42
+            )
+        }
+        
+        best_model = None
+        best_score = 0
+        results = {}
+        
+        st.info("🧠 Treinando modelos avançados...")
+        for name, model in models.items():
+            with st.spinner(f"Treinando {name}..."):
+                model.fit(X_train_scaled, y_train)
+                
+                val_pred = model.predict(X_val_scaled)
+                val_acc = accuracy_score(y_val, val_pred)
+                
+                test_pred = model.predict(X_test_scaled)
+                test_acc = accuracy_score(y_test, test_pred)
+                test_prec = precision_score(y_test, test_pred)
+                test_rec = recall_score(y_test, test_pred)
+                test_f1 = f1_score(y_test, test_pred)
+                
+                results[name] = {
+                    'val_accuracy': val_acc,
+                    'test_accuracy': test_acc,
+                    'precision': test_prec,
+                    'recall': test_rec,
+                    'f1_score': test_f1
+                }
+                
+                st.success(f"✅ {name}: F1-Score = {test_f1:.1%} | Acurácia = {test_acc:.1%}")
+                
+                if test_f1 > best_score:
+                    best_score = test_f1
+                    best_model = model
+        
+        model_data = {
+            'model': best_model,
+            'scaler': scaler,
+            'feature_cols': feature_cols,
+            'team_stats': team_stats,
+            'league_analysis': league_analysis,
+            'results': results,
+            'training_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'total_samples': len(df),
+            'training_days': len(df['date'].unique()) if 'date' in df.columns else 0,
+            'features_count': len(feature_cols),
+            'advanced_features': True
+        }
+        
+        st.session_state.trained_model = model_data
+        st.session_state.model_trained = True
+        
+        try:
+            for directory in [MODEL_DIR, "/tmp/models"]:
+                try:
+                    if not os.path.exists(directory):
+                        os.makedirs(directory)
+                    model_path = os.path.join(directory, f"model_advanced_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pkl")
+                    joblib.dump(model_data, model_path)
+                    st.success(f"💾 Modelo salvo: {model_path}")
+                    break
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        
+        return model_data, results
+        
+    except Exception as e:
+        st.error(f"❌ Erro durante o treinamento: {str(e)}")
+        st.info("💡 Tente com menos dias de treinamento ou use dados em cache")
+        return None, None
 
 def load_latest_model():
     """Carrega o modelo mais recente"""
@@ -920,13 +1030,12 @@ def load_latest_model():
                     latest_model = sorted(model_files)[-1]
                     model_path = os.path.join(directory, latest_model)
                     return joblib.load(model_path)
-    except Exception as e:
-        st.error(f"Erro ao carregar modelo: {e}")
+    except Exception:
+        pass
     return None
 
 def get_league_context(league_name):
     """Retorna contexto da liga para comparação"""
-    # Médias históricas das principais ligas (% Over 0.5 HT)
     league_averages = {
         'Premier League': 65,
         'La Liga': 60,
@@ -961,10 +1070,8 @@ def get_league_context(league_name):
         'USL Championship': 69
     }
     
-    # Valor padrão para ligas não mapeadas
     default_avg = 60
     
-    # Buscar média da liga (case insensitive)
     league_avg = default_avg
     for key, value in league_averages.items():
         if key.lower() in league_name.lower() or league_name.lower() in key.lower():
@@ -1006,24 +1113,20 @@ def display_prediction_card_clean(pred, index):
     try:
         utc_time = datetime.strptime(pred['kickoff'][:16], '%Y-%m-%dT%H:%M')
         hora_portugal = utc_time.strftime('%H:%M')
-    except:
+    except Exception:
         hora_portugal = pred['kickoff'][11:16]
     
-    # Determinar contexto da liga
     league_context = get_league_context(pred['league'])
     
-    # Badge de confiança colorido
     if pred['confidence'] > 80:
-        confidence_color = "#38ef7d"  # Verde
+        confidence_color = "#38ef7d"
     elif pred['confidence'] > 65:
-        confidence_color = "#667eea"  # Azul
+        confidence_color = "#667eea"
     else:
-        confidence_color = "#f093fb"  # Rosa
+        confidence_color = "#f093fb"
     
-    # Mostrar previsão contextualizada
     prediction_context = get_prediction_context(pred, league_context)
     
-    # Diferença vs liga
     diff = pred['confidence'] - league_context['league_avg']
     diff_text = f"+{diff:.0f}%" if diff > 0 else f"{diff:.0f}%"
     diff_color = "#38ef7d" if diff > 5 else "#f093fb" if diff < -5 else "#667eea"
@@ -1083,7 +1186,7 @@ def display_all_games_list_simple(predictions):
         try:
             utc_time = datetime.strptime(pred['kickoff'][:16], '%Y-%m-%dT%H:%M')
             hora = utc_time.strftime('%H:%M')
-        except:
+        except Exception:
             hora = pred['kickoff'][11:16]
         
         prediction_icon = "🟢" if pred['prediction'] == 'OVER 0.5' else "🔴"
@@ -1132,7 +1235,6 @@ def predict_matches(fixtures, model_data):
             league_info = league_analysis.get(league_name, {})
             league_over_rate = league_info.get('over_rate', 0.5)
             
-            # Calcular features
             home_over_rate = home_stats['over_05'] / max(home_stats['games'], 1)
             home_over_rate_binary = home_stats['over_05_binary'] / max(home_stats['games'], 1)
             home_avg_goals = home_stats['goals_scored'] / max(home_stats['games'], 1)
@@ -1143,7 +1245,6 @@ def predict_matches(fixtures, model_data):
             away_avg_goals = away_stats['goals_scored'] / max(away_stats['games'], 1)
             away_avg_goals_capped = away_stats['goals_capped'] / max(away_stats['games'], 1)
             
-            # Features avançadas
             if len(home_stats['goals_list']) > 1:
                 home_goals_cv = np.std(home_stats['goals_list']) / (np.mean(home_stats['goals_list']) + 0.01)
                 home_consistency = 1 / (1 + home_goals_cv)
@@ -1158,19 +1259,16 @@ def predict_matches(fixtures, model_data):
                 away_consistency = 0.5
                 away_goals_cv = 1.0
             
-            # Combined Score
             home_strength_binary = home_over_rate_binary * home_avg_goals_capped * home_consistency
             away_strength_binary = away_over_rate_binary * away_avg_goals_capped * away_consistency
             combined_score_binary = home_strength_binary + away_strength_binary
             
-            # Momentum
             home_recent = home_stats['over_list'][-5:] if len(home_stats['over_list']) >= 5 else home_stats['over_list']
             away_recent = away_stats['over_list'][-5:] if len(away_stats['over_list']) >= 5 else away_stats['over_list']
             
             home_momentum = sum([1 if x > 0 else 0 for x in home_recent]) / len(home_recent) if home_recent else home_over_rate_binary
             away_momentum = sum([1 if x > 0 else 0 for x in away_recent]) / len(away_recent) if away_recent else away_over_rate_binary
             
-            # Montar dictionary de features
             features = {}
             for col in feature_cols:
                 if col == 'home_over_rate':
@@ -1204,7 +1302,6 @@ def predict_matches(fixtures, model_data):
                 else:
                     features[col] = 0.5
             
-            # Criar DataFrame e fazer previsão
             X = pd.DataFrame([features])[feature_cols]
             X_scaled = scaler.transform(X)
             
@@ -1212,7 +1309,6 @@ def predict_matches(fixtures, model_data):
             pred_class = model.predict(X_scaled)[0]
             confidence = max(pred_proba) * 100
             
-            # Ajuste baseado na tendência da liga
             league_trend = league_info.get('trend', 'BALANCED')
             if league_trend == 'OVER' and pred_class == 1:
                 confidence = min(confidence * 1.05, 95)
@@ -1244,7 +1340,7 @@ def predict_matches(fixtures, model_data):
             
             predictions.append(prediction)
             
-        except Exception as e:
+        except Exception:
             continue
     
     predictions.sort(key=lambda x: x['confidence'], reverse=True)
@@ -1285,7 +1381,6 @@ def analyze_leagues(df):
     return league_analysis
 
 def main():
-    # Header principal MODIFICADO
     st.markdown("""
     <div class="main-header">
         <h1>⚽ HT Goals AI Engine</h1>
@@ -1293,46 +1388,47 @@ def main():
     </div>
     """, unsafe_allow_html=True)
     
-    # Sidebar
+    # Teste de conectividade inicial
+    conn_ok, conn_msg = test_api_connection()
+    
     with st.sidebar:
         st.title("⚙️ Configurações")
         
-        # Verificar status da API
-        api_ok, requests_left, api_status = check_api_status()
-        
-        if not api_ok:
-            st.error("❌ Problema com a API")
-            st.error(f"Erro: {api_status}")
-        else:
-            st.success(f"✅ API conectada")
-            if requests_left > 0:
-                st.info(f"📊 Requests restantes hoje: {requests_left}")
+        # Status da API com indicador visual
+        if conn_ok:
+            api_ok, requests_left, api_status = check_api_status()
+            
+            if not api_ok:
+                st.markdown(f'<div class="connection-status" style="color: #dc3545;">❌ {api_status}</div>', unsafe_allow_html=True)
             else:
-                st.warning(f"⚠️ Sem requests restantes hoje!")
+                st.markdown(f'<div class="connection-status" style="color: #28a745;">✅ API conectada</div>', unsafe_allow_html=True)
+                if requests_left > 0:
+                    st.info(f"📊 Requests restantes hoje: {requests_left}")
+                else:
+                    st.warning(f"⚠️ Sem requests restantes hoje!")
+        else:
+            st.markdown(f'<div class="connection-status" style="color: #dc3545;">❌ {conn_msg}</div>', unsafe_allow_html=True)
         
-        # Data selecionada
         selected_date = st.date_input(
             "📅 Data para análise:",
             value=datetime.now().date()
         )
         
-        # Configurações ML
         st.subheader("🤖 Machine Learning Avançado")
         
         days_training = st.slider(
             "📊 Dias para treinamento:",
             min_value=15,
             max_value=730,
-            value=365
+            value=150  # Valor padrão menor para evitar erros
         )
         
         use_cache = st.checkbox(
             "💾 Usar dados em cache",
             value=True,
-            help="Usar dados históricos salvos localmente"
+            help="Recomendado: Usar dados históricos salvos localmente"
         )
         
-        # Mostrar features do modelo
         st.subheader("🧠 Features Avançadas")
         st.info("""
         ✅ **Coeficiente de Variação**
@@ -1380,7 +1476,6 @@ def main():
     with tab1:
         st.header(f"🎯 Previsões para {selected_date.strftime('%d/%m/%Y')}")
         
-        # Verificar se há modelo disponível
         model_data = None
         
         if st.session_state.get('model_trained', False) and st.session_state.get('trained_model'):
@@ -1404,20 +1499,20 @@ def main():
             st.info(f"🤖 Modelo: {model_data.get('training_date', 'Unknown')}")
             st.info(f"📊 Times no banco: {len(model_data.get('team_stats', {}))}")
             
-            # Buscar jogos do dia
             date_str = selected_date.strftime('%Y-%m-%d')
             
             with st.spinner("🔍 Buscando jogos do dia..."):
-                fixtures = get_fixtures_cached(date_str)
+                fixtures = get_fixtures_cached_robust(date_str)
             
             if not fixtures:
                 st.info("📅 Nenhum jogo encontrado para esta data")
+                if not conn_ok:
+                    st.error("❌ Verifique sua conexão com a internet")
             else:
                 with st.spinner("🤖 Aplicando Machine Learning Avançado..."):
                     predictions = predict_matches(fixtures, model_data)
                 
                 if predictions:
-                    # Métricas resumo
                     col1, col2, col3, col4 = st.columns(4)
                     
                     total_games = len(predictions)
@@ -1457,19 +1552,17 @@ def main():
                         </div>
                         """, unsafe_allow_html=True)
                     
-                    # Top previsões com cards limpos
                     st.subheader("🏆 Melhores Apostas (Análise Avançada)")
                     
                     best_bets = [p for p in predictions if p['prediction'] == 'OVER 0.5' and p['confidence'] > 65]
                     best_bets.sort(key=lambda x: x['confidence'], reverse=True)
                     
                     if best_bets:
-                        for i, pred in enumerate(best_bets[:5]):  # Mostrar top 5
+                        for i, pred in enumerate(best_bets[:5]):
                             display_prediction_card_clean(pred, i)
                     else:
                         st.info("🤷 Nenhuma aposta OVER 0.5 com boa confiança encontrada hoje")
                     
-                    # Lista completa de jogos simplificada
                     display_all_games_list_simple(predictions)
                 
                 else:
@@ -1484,7 +1577,7 @@ def main():
             model_data = load_latest_model()
         
         if model_data:
-            df = collect_historical_data(days=15, use_cached=True)
+            df = collect_historical_data_robust(days=15, use_cached=True)
             
             if not df.empty:
                 league_analysis = analyze_leagues(df)
@@ -1525,6 +1618,11 @@ def main():
     with tab3:
         st.header("🤖 Treinar Modelo ML Avançado")
         
+        # Aviso sobre conectividade
+        if not conn_ok:
+            st.error(f"❌ {conn_msg}")
+            st.info("💡 **Recomendação**: Marque 'Usar dados em cache' para treinar com dados locais")
+        
         st.success("""
         🧠 **FEATURES AVANÇADAS INCLUÍDAS:**
         
@@ -1536,61 +1634,71 @@ def main():
         ✅ **Efficiency Metrics**: Eficiência de conversão em Over  
         """)
         
-        st.info("""
+        st.info(f"""
         O modelo será treinado com **25+ features avançadas**:
         - **70%** dos dados para treinamento
         - **15%** para validação  
         - **15%** para teste final
+        - **{days_training} dias** de dados históricos
         """)
+        
+        # Aviso sobre quantidade de dados
+        if days_training > 365:
+            st.warning("⚠️ Muitos dias podem causar timeout. Recomendado: 150-365 dias")
         
         if st.button("🚀 Iniciar Treinamento Avançado", type="primary"):
             with st.spinner(f"📊 Coletando {days_training} dias de dados históricos..."):
-                df = collect_historical_data(days=days_training, use_cached=use_cache)
+                df = collect_historical_data_robust(days=days_training, use_cached=use_cache)
             
             if df.empty:
                 st.error("❌ Não foi possível coletar dados")
+                st.info("💡 **Soluções:**")
+                st.info("- Marque 'Usar dados em cache'")
+                st.info("- Reduza os dias de treinamento")
+                st.info("- Verifique sua conexão com internet")
             else:
                 st.success(f"✅ {len(df)} jogos coletados")
                 
-                with st.spinner("🧠 Treinando modelos avançados com features de variação e combined score..."):
-                    model_data, results = train_ml_model(df)
+                with st.spinner("🧠 Treinando modelos avançados..."):
+                    model_data, results = train_ml_model_robust(df)
                 
-                st.success("✅ Modelo avançado treinado com sucesso!")
-                
-                st.subheader("📊 Resultados do Treinamento Avançado")
-                
-                for model_name, metrics in results.items():
-                    col1, col2, col3, col4, col5 = st.columns(5)
+                if model_data and results:
+                    st.success("✅ Modelo avançado treinado com sucesso!")
                     
-                    with col1:
-                        st.metric(f"{model_name}", "")
-                    with col2:
-                        st.metric("Validação", f"{metrics['val_accuracy']:.1%}")
-                    with col3:
-                        st.metric("Teste", f"{metrics['test_accuracy']:.1%}")
-                    with col4:
-                        st.metric("Precisão", f"{metrics['precision']:.1%}")
-                    with col5:
-                        st.metric("F1-Score", f"{metrics['f1_score']:.1%}")
-                
-                if hasattr(model_data['model'], 'feature_importances_'):
-                    st.subheader("🎯 Features Mais Importantes")
+                    st.subheader("📊 Resultados do Treinamento Avançado")
                     
-                    feature_importance = pd.DataFrame({
-                        'feature': model_data['feature_cols'],
-                        'importance': model_data['model'].feature_importances_
-                    }).sort_values('importance', ascending=False)
+                    for model_name, metrics in results.items():
+                        col1, col2, col3, col4, col5 = st.columns(5)
+                        
+                        with col1:
+                            st.metric(f"{model_name}", "")
+                        with col2:
+                            st.metric("Validação", f"{metrics['val_accuracy']:.1%}")
+                        with col3:
+                            st.metric("Teste", f"{metrics['test_accuracy']:.1%}")
+                        with col4:
+                            st.metric("Precisão", f"{metrics['precision']:.1%}")
+                        with col5:
+                            st.metric("F1-Score", f"{metrics['f1_score']:.1%}")
                     
-                    # Mostrar top 20 features
-                    top_features = feature_importance.head(20)
-                    st.bar_chart(top_features.set_index('feature')['importance'])
-                    
-                    # Destacar features avançadas
-                    advanced_features = top_features[top_features['feature'].str.contains('consistency|combined|momentum|cv|efficiency')]
-                    if not advanced_features.empty:
-                        st.success("🧠 Features avançadas entre as mais importantes:")
-                        for _, row in advanced_features.iterrows():
-                            st.write(f"• **{row['feature']}**: {row['importance']:.3f}")
+                    if hasattr(model_data['model'], 'feature_importances_'):
+                        st.subheader("🎯 Features Mais Importantes")
+                        
+                        feature_importance = pd.DataFrame({
+                            'feature': model_data['feature_cols'],
+                            'importance': model_data['model'].feature_importances_
+                        }).sort_values('importance', ascending=False)
+                        
+                        top_features = feature_importance.head(20)
+                        st.bar_chart(top_features.set_index('feature')['importance'])
+                        
+                        advanced_features = top_features[top_features['feature'].str.contains('consistency|combined|momentum|cv|efficiency')]
+                        if not advanced_features.empty:
+                            st.success("🧠 Features avançadas entre as mais importantes:")
+                            for _, row in advanced_features.iterrows():
+                                st.write(f"• **{row['feature']}**: {row['importance']:.3f}")
+                else:
+                    st.error("❌ Falha no treinamento")
     
     with tab4:
         st.header("📈 Performance do Modelo Avançado")
@@ -1601,7 +1709,6 @@ def main():
             model_data = load_latest_model()
         
         if model_data and 'results' in model_data:
-            # Indicar se é modelo avançado
             if model_data.get('advanced_features', False):
                 st.success("🧠 Modelo com Features Avançadas Ativo")
                 st.info(f"📊 Total de features: {model_data.get('features_count', 'N/A')}")
@@ -1686,7 +1793,6 @@ def main():
                     </div>
                     """, unsafe_allow_html=True)
             
-            # Comparação de features (se disponível)
             if model_data.get('advanced_features', False):
                 st.subheader("🧠 Análise de Features Avançadas")
                 
@@ -1696,7 +1802,6 @@ def main():
                         'importance': model_data['model'].feature_importances_
                     }).sort_values('importance', ascending=False)
                     
-                    # Separar features por categoria
                     basic_features = feature_importance[feature_importance['feature'].str.contains('home_over_rate|away_over_rate|league_over_rate|combined_over_rate|combined_goals')]
                     consistency_features = feature_importance[feature_importance['feature'].str.contains('consistency|cv')]
                     combined_score_features = feature_importance[feature_importance['feature'].str.contains('combined_score|strength|efficiency')]
@@ -1771,8 +1876,9 @@ def main():
             st.info("🤖 Nenhum modelo treinado ainda")
             st.write("Para começar:")
             st.write("1. Vá para a aba 'Treinar Modelo Avançado'")
-            st.write("2. Clique em 'Iniciar Treinamento Avançado'")
-            st.write("3. Aguarde o modelo ser treinado com todas as features avançadas")
+            st.write("2. Marque 'Usar dados em cache' (recomendado)")
+            st.write("3. Clique em 'Iniciar Treinamento Avançado'")
+            st.write("4. Aguarde o modelo ser treinado com todas as features avançadas")
 
 if __name__ == "__main__":
     main()
