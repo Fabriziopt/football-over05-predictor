@@ -45,7 +45,7 @@ except Exception as e:
     if not os.path.exists(MODEL_DIR):
         os.makedirs(MODEL_DIR)
 
-# CSS Neumorphism Personalizado
+# CSS COMPLETO - Neumorphism + Cards Limpos
 st.markdown("""
 <style>
     @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
@@ -152,43 +152,73 @@ st.markdown("""
         letter-spacing: 0.5px;
     }
     
-    /* Cards de previsão estilo neumorphism limpo */
-    .prediction-card {
+    /* Cards simples e limpos */
+    .prediction-card-simple {
         background: #e0e5ec;
-        color: #2d3748;
-        padding: 2rem;
-        border-radius: 20px;
-        margin: 1.5rem 0;
-        box-shadow: 9px 9px 18px #c8d0e7, -9px -9px 18px #f8ffff;
-        transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+        border-radius: 16px;
+        padding: 1.5rem;
+        margin: 1rem 0;
+        box-shadow: 8px 8px 16px #c8d0e7, -8px -8px 16px #f8ffff;
+        transition: all 0.3s ease;
         border: none;
-        position: relative;
-        overflow: hidden;
     }
     
-    .prediction-card::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: 0;
-        width: 4px;
-        height: 100%;
-        background: linear-gradient(to bottom, #667eea, #38ef7d);
-        opacity: 0;
-        transition: opacity 0.3s ease;
-    }
-    
-    .prediction-card:hover::before {
-        opacity: 1;
-    }
-    
-    .prediction-card:hover {
-        box-shadow: inset 9px 9px 18px #c8d0e7, inset -9px -9px 18px #f8ffff;
+    .prediction-card-simple:hover {
         transform: translateY(-2px);
+        box-shadow: 10px 10px 20px #c8d0e7, -10px -10px 20px #f8ffff;
     }
     
-    /* Estilo para o cabeçalho da previsão */
-    .prediction-header {
+    .card-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        margin-bottom: 1rem;
+    }
+    
+    .match-info h3 {
+        color: #2d3748;
+        font-size: 1.2rem;
+        font-weight: 700;
+        margin: 0 0 0.5rem 0;
+    }
+    
+    .league-time {
+        display: flex;
+        gap: 1rem;
+        flex-wrap: wrap;
+    }
+    
+    .league {
+        color: #667eea;
+        font-weight: 600;
+        font-size: 0.9rem;
+    }
+    
+    .time {
+        color: #718096;
+        font-weight: 500;
+        font-size: 0.9rem;
+    }
+    
+    .confidence-simple {
+        color: white;
+        font-weight: 800;
+        font-size: 1.2rem;
+        padding: 0.8rem 1.2rem;
+        border-radius: 12px;
+        text-align: center;
+        min-width: 70px;
+        box-shadow: inset 2px 2px 4px rgba(0,0,0,0.1);
+    }
+    
+    .prediction-info {
+        background: rgba(102, 126, 234, 0.02);
+        padding: 1rem;
+        border-radius: 12px;
+        box-shadow: inset 2px 2px 4px rgba(200, 208, 231, 0.3);
+    }
+    
+    .main-prediction {
         display: flex;
         justify-content: space-between;
         align-items: center;
@@ -197,155 +227,90 @@ st.markdown("""
         border-bottom: 1px solid rgba(200, 208, 231, 0.3);
     }
     
-    .team-info h3 {
-        color: #2d3748;
-        font-size: 1.4rem;
-        font-weight: 700;
-        margin: 0 0 0.5rem 0;
-    }
-    
-    .league-info {
-        color: #667eea;
+    .prediction-label {
+        color: #4a5568;
         font-weight: 600;
-        font-size: 0.95rem;
+        font-size: 1rem;
     }
     
-    .time-info {
-        color: #718096;
-        font-weight: 500;
-        font-size: 0.9rem;
-    }
-    
-    /* Confidence badge neumorphism */
-    .confidence-badge {
-        background: #e0e5ec;
-        padding: 0.8rem 1.5rem;
-        border-radius: 15px;
+    .prediction-value {
+        color: #2d3748;
         font-weight: 700;
         font-size: 1.1rem;
-        box-shadow: inset 3px 3px 6px #c8d0e7, inset -3px -3px 6px #f8ffff;
-        color: #667eea;
-        min-width: 80px;
-        text-align: center;
     }
     
-    /* Seção de análise limpa */
-    .analysis-section {
-        background: rgba(102, 126, 234, 0.02);
-        padding: 1.5rem;
-        border-radius: 15px;
-        margin-top: 1rem;
-        box-shadow: inset 2px 2px 4px rgba(200, 208, 231, 0.3);
-    }
-    
-    .analysis-title {
-        color: #667eea;
-        font-weight: 700;
-        font-size: 1rem;
-        margin-bottom: 1rem;
-        display: flex;
-        align-items: center;
-        gap: 0.5rem;
-    }
-    
-    .analysis-grid {
+    .context-info {
         display: grid;
         grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-        gap: 1rem;
+        gap: 0.8rem;
     }
     
-    .analysis-item {
-        background: #e0e5ec;
-        padding: 1rem;
-        border-radius: 12px;
-        box-shadow: 3px 3px 6px #c8d0e7, -3px -3px 6px #f8ffff;
-        text-align: center;
+    .context-item {
+        display: flex;
+        flex-direction: column;
+        gap: 0.2rem;
     }
     
-    .analysis-item-label {
+    .context-label {
         color: #718096;
         font-size: 0.8rem;
         font-weight: 600;
         text-transform: uppercase;
         letter-spacing: 0.3px;
-        margin-bottom: 0.3rem;
     }
     
-    .analysis-item-value {
+    .context-value {
         color: #2d3748;
-        font-size: 1.1rem;
-        font-weight: 700;
-    }
-    
-    /* Seção de probabilidades */
-    .probability-section {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-top: 1rem;
-        padding-top: 1rem;
-        border-top: 1px solid rgba(200, 208, 231, 0.3);
-    }
-    
-    .prediction-result {
-        font-size: 1.1rem;
-        font-weight: 700;
-        color: #2d3748;
-    }
-    
-    .probability-text {
-        color: #718096;
         font-size: 0.95rem;
-        font-weight: 500;
+        font-weight: 600;
     }
     
-    /* Lista de jogos estilo neumorphism */
-    .games-list {
+    /* Lista de jogos simplificada */
+    .games-list-simple {
         background: #e0e5ec;
-        border-radius: 20px;
+        border-radius: 16px;
         padding: 1.5rem;
         margin-top: 2rem;
-        box-shadow: 9px 9px 18px #c8d0e7, -9px -9px 18px #f8ffff;
+        box-shadow: 8px 8px 16px #c8d0e7, -8px -8px 16px #f8ffff;
     }
     
-    .games-list h3 {
+    .games-list-simple h3 {
         color: #667eea;
         font-weight: 700;
-        margin-bottom: 1.5rem;
+        margin-bottom: 1rem;
         text-align: center;
+        font-size: 1.2rem;
     }
     
-    .game-item {
+    .game-item-simple {
         background: #e0e5ec;
-        padding: 1rem 1.5rem;
-        border-radius: 12px;
-        margin-bottom: 0.8rem;
+        padding: 0.8rem 1rem;
+        border-radius: 10px;
+        margin-bottom: 0.6rem;
         box-shadow: 3px 3px 6px #c8d0e7, -3px -3px 6px #f8ffff;
         display: flex;
         justify-content: space-between;
         align-items: center;
-        transition: all 0.3s ease;
+        transition: all 0.2s ease;
     }
     
-    .game-item:hover {
+    .game-item-simple:hover {
         box-shadow: inset 3px 3px 6px #c8d0e7, inset -3px -3px 6px #f8ffff;
-        transform: scale(0.99);
     }
     
-    .game-teams {
+    .game-teams-simple {
         font-weight: 600;
         color: #2d3748;
-        font-size: 0.95rem;
+        font-size: 0.9rem;
     }
     
-    .game-confidence {
-        background: #e0e5ec;
-        padding: 0.4rem 0.8rem;
-        border-radius: 10px;
+    .game-confidence-simple {
+        background: #667eea;
+        color: white;
+        padding: 0.3rem 0.6rem;
+        border-radius: 8px;
         font-weight: 700;
-        font-size: 0.9rem;
-        box-shadow: inset 2px 2px 4px #c8d0e7, inset -2px -2px 4px #f8ffff;
-        color: #667eea;
+        font-size: 0.85rem;
     }
     
     /* Sidebar neumorphism */
@@ -447,22 +412,26 @@ st.markdown("""
             font-size: 2rem;
         }
         
-        .metric-card, .prediction-card {
+        .metric-card, .prediction-card-simple {
             border-radius: 15px;
             padding: 1.5rem;
         }
         
-        .prediction-header {
+        .card-header {
             flex-direction: column;
             gap: 1rem;
             text-align: center;
         }
         
-        .analysis-grid {
-            grid-template-columns: repeat(2, 1fr);
+        .league-time {
+            justify-content: center;
         }
         
-        .game-item {
+        .context-info {
+            grid-template-columns: 1fr;
+        }
+        
+        .game-item-simple {
             flex-direction: column;
             gap: 0.5rem;
             text-align: center;
@@ -955,6 +924,183 @@ def load_latest_model():
         st.error(f"Erro ao carregar modelo: {e}")
     return None
 
+def get_league_context(league_name):
+    """Retorna contexto da liga para comparação"""
+    # Médias históricas das principais ligas (% Over 0.5 HT)
+    league_averages = {
+        'Premier League': 65,
+        'La Liga': 60,
+        'Serie A': 55,
+        'Bundesliga': 70,
+        'Ligue 1': 58,
+        'Eredivisie': 75,
+        'Primeira Liga': 62,
+        'Championship': 68,
+        'Liga MX': 72,
+        'MLS': 70,
+        'Brasileirão': 68,
+        'Champions League': 58,
+        'Europa League': 62,
+        'Copa Libertadores': 65,
+        'Bundesliga 2': 72,
+        'Serie B': 58,
+        'La Liga 2': 62,
+        'Liga Portugal 2': 65,
+        'Ligue 2': 60,
+        'Scottish Premiership': 68,
+        'Belgian Pro League': 63,
+        'Superliga Argentina': 66,
+        'Liga Profesional': 66,
+        'J1 League': 61,
+        'K League 1': 64,
+        'Chinese Super League': 59,
+        'Indian Super League': 67,
+        'A-League': 69,
+        'USL League One': 71,
+        'USL League Two': 73,
+        'USL Championship': 69
+    }
+    
+    # Valor padrão para ligas não mapeadas
+    default_avg = 60
+    
+    # Buscar média da liga (case insensitive)
+    league_avg = default_avg
+    for key, value in league_averages.items():
+        if key.lower() in league_name.lower() or league_name.lower() in key.lower():
+            league_avg = value
+            break
+    
+    return {
+        'league_avg': league_avg,
+        'comparison_color': '#38ef7d' if league_avg > 65 else '#667eea' if league_avg > 55 else '#f093fb',
+        'comparison_text': 'Liga Over' if league_avg > 65 else 'Liga Equilibrada' if league_avg > 55 else 'Liga Under'
+    }
+
+def get_prediction_context(pred, league_context):
+    """Gera contexto inteligente da previsão"""
+    confidence = pred['confidence']
+    league_avg = league_context['league_avg']
+    
+    if pred['prediction'] == 'OVER 0.5':
+        if confidence > league_avg + 15:
+            return "🔥 Excelente para Over"
+        elif confidence > league_avg + 8:
+            return "✅ Muito bom para Over"
+        elif confidence > league_avg + 3:
+            return "📈 Acima da média da liga"
+        elif confidence > league_avg:
+            return "📊 Ligeiramente acima"
+        else:
+            return "⚠️ Abaixo do esperado"
+    else:
+        if confidence > 75:
+            return "❄️ Forte indicação Under"
+        elif confidence > 65:
+            return "📉 Boa tendência Under"
+        else:
+            return "🤔 Under com reservas"
+
+def display_prediction_card_clean(pred, index):
+    """Exibe card de previsão no estilo simples e limpo"""
+    try:
+        utc_time = datetime.strptime(pred['kickoff'][:16], '%Y-%m-%dT%H:%M')
+        hora_portugal = utc_time.strftime('%H:%M')
+    except:
+        hora_portugal = pred['kickoff'][11:16]
+    
+    # Determinar contexto da liga
+    league_context = get_league_context(pred['league'])
+    
+    # Badge de confiança colorido
+    if pred['confidence'] > 80:
+        confidence_color = "#38ef7d"  # Verde
+    elif pred['confidence'] > 65:
+        confidence_color = "#667eea"  # Azul
+    else:
+        confidence_color = "#f093fb"  # Rosa
+    
+    # Mostrar previsão contextualizada
+    prediction_context = get_prediction_context(pred, league_context)
+    
+    # Diferença vs liga
+    diff = pred['confidence'] - league_context['league_avg']
+    diff_text = f"+{diff:.0f}%" if diff > 0 else f"{diff:.0f}%"
+    diff_color = "#38ef7d" if diff > 5 else "#f093fb" if diff < -5 else "#667eea"
+    
+    st.markdown(f"""
+    <div class="prediction-card-simple">
+        <div class="card-header">
+            <div class="match-info">
+                <h3>⚽ {pred['home_team']} vs {pred['away_team']}</h3>
+                <div class="league-time">
+                    <span class="league">🏆 {pred['league']} ({pred['country']})</span>
+                    <span class="time">🕐 {hora_portugal}</span>
+                </div>
+            </div>
+            <div class="confidence-simple" style="background-color: {confidence_color};">
+                {pred['confidence']:.0f}%
+            </div>
+        </div>
+        
+        <div class="prediction-info">
+            <div class="main-prediction">
+                <span class="prediction-label">🎯 Previsão ML:</span>
+                <span class="prediction-value">{pred['prediction']}</span>
+            </div>
+            
+            <div class="context-info">
+                <div class="context-item">
+                    <span class="context-label">📊 Liga (média)</span>
+                    <span class="context-value">{league_context['league_avg']:.0f}%</span>
+                </div>
+                <div class="context-item">
+                    <span class="context-label">📈 Vs Liga</span>
+                    <span class="context-value" style="color: {diff_color};">
+                        {diff_text}
+                    </span>
+                </div>
+                <div class="context-item">
+                    <span class="context-label">💡 Análise</span>
+                    <span class="context-value">{prediction_context}</span>
+                </div>
+            </div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+
+def display_all_games_list_simple(predictions):
+    """Exibe lista simplificada de todos os jogos"""
+    if not predictions:
+        return
+    
+    st.markdown("""
+    <div class="games-list-simple">
+        <h3>📋 Todos os Jogos do Dia</h3>
+    """, unsafe_allow_html=True)
+    
+    for pred in predictions:
+        try:
+            utc_time = datetime.strptime(pred['kickoff'][:16], '%Y-%m-%dT%H:%M')
+            hora = utc_time.strftime('%H:%M')
+        except:
+            hora = pred['kickoff'][11:16]
+        
+        prediction_icon = "🟢" if pred['prediction'] == 'OVER 0.5' else "🔴"
+        
+        st.markdown(f"""
+        <div class="game-item-simple">
+            <div class="game-teams-simple">
+                {prediction_icon} {pred['home_team']} vs {pred['away_team']} ({hora})
+            </div>
+            <div class="game-confidence-simple">
+                {pred['confidence']:.0f}%
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+    
+    st.markdown("</div>", unsafe_allow_html=True)
+
 def predict_matches(fixtures, model_data):
     """Faz previsões para os jogos do dia usando features avançadas"""
     predictions = []
@@ -1138,110 +1284,6 @@ def analyze_leagues(df):
     
     return league_analysis
 
-def display_prediction_card_clean(pred, index):
-    """Exibe card de previsão no estilo limpo neumorphism"""
-    try:
-        utc_time = datetime.strptime(pred['kickoff'][:16], '%Y-%m-%dT%H:%M')
-        hora_portugal = utc_time.strftime('%H:%M')
-    except:
-        hora_portugal = pred['kickoff'][11:16]
-    
-    confidence_class = "accuracy-high" if pred['confidence'] > 75 else "accuracy-medium"
-    
-    # Análise avançada limpa
-    advanced_info = ""
-    if 'advanced_features' in pred:
-        adv = pred['advanced_features']
-        advanced_info = f"""
-        <div class="analysis-section">
-            <div class="analysis-title">
-                🧠 Análise Avançada
-            </div>
-            <div class="analysis-grid">
-                <div class="analysis-item">
-                    <div class="analysis-item-label">Consistência Casa</div>
-                    <div class="analysis-item-value">{adv.get('home_consistency', 0):.2f}</div>
-                </div>
-                <div class="analysis-item">
-                    <div class="analysis-item-label">Consistência Fora</div>
-                    <div class="analysis-item-value">{adv.get('away_consistency', 0):.2f}</div>
-                </div>
-                <div class="analysis-item">
-                    <div class="analysis-item-label">Combined Score</div>
-                    <div class="analysis-item-value">{adv.get('combined_score', 0):.3f}</div>
-                </div>
-                <div class="analysis-item">
-                    <div class="analysis-item-label">Momentum Casa</div>
-                    <div class="analysis-item-value">{adv.get('home_momentum', 0):.0%}</div>
-                </div>
-                <div class="analysis-item">
-                    <div class="analysis-item-label">Momentum Fora</div>
-                    <div class="analysis-item-value">{adv.get('away_momentum', 0):.0%}</div>
-                </div>
-                <div class="analysis-item">
-                    <div class="analysis-item-label">Taxa de Acerto</div>
-                    <div class="analysis-item-value">{pred['confidence']:.1f}%</div>
-                </div>
-            </div>
-        </div>
-        """
-    
-    st.markdown(f"""
-    <div class="prediction-card">
-        <div class="prediction-header">
-            <div class="team-info">
-                <h3>⚽ {pred['home_team']} vs {pred['away_team']}</h3>
-                <div class="league-info">🏆 {pred['league']} ({pred['country']})</div>
-                <div class="time-info">🕐 {hora_portugal}</div>
-            </div>
-            <div class="confidence-badge">{pred['confidence']:.1f}%</div>
-        </div>
-        
-        {advanced_info}
-        
-        <div class="probability-section">
-            <div class="prediction-result">
-                🎯 Previsão: {pred['prediction']}
-            </div>
-            <div class="probability-text">
-                Over {pred['probability_over']:.1f}% | Under {pred['probability_under']:.1f}%
-            </div>
-        </div>
-    </div>
-    """, unsafe_allow_html=True)
-
-def display_all_games_list(predictions):
-    """Exibe lista de todos os jogos com confiança"""
-    if not predictions:
-        return
-    
-    st.markdown("""
-    <div class="games-list">
-        <h3>📋 Todos os Jogos do Dia</h3>
-    """, unsafe_allow_html=True)
-    
-    for pred in predictions:
-        try:
-            utc_time = datetime.strptime(pred['kickoff'][:16], '%Y-%m-%dT%H:%M')
-            hora = utc_time.strftime('%H:%M')
-        except:
-            hora = pred['kickoff'][11:16]
-        
-        prediction_icon = "🟢" if pred['prediction'] == 'OVER 0.5' else "🔴"
-        
-        st.markdown(f"""
-        <div class="game-item">
-            <div class="game-teams">
-                {prediction_icon} {pred['home_team']} vs {pred['away_team']} ({hora})
-            </div>
-            <div class="game-confidence">
-                {pred['confidence']:.1f}%
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-    
-    st.markdown("</div>", unsafe_allow_html=True)
-
 def main():
     # Header principal MODIFICADO
     st.markdown("""
@@ -1415,7 +1457,7 @@ def main():
                         </div>
                         """, unsafe_allow_html=True)
                     
-                    # Top previsões com nova função
+                    # Top previsões com cards limpos
                     st.subheader("🏆 Melhores Apostas (Análise Avançada)")
                     
                     best_bets = [p for p in predictions if p['prediction'] == 'OVER 0.5' and p['confidence'] > 65]
@@ -1427,8 +1469,8 @@ def main():
                     else:
                         st.info("🤷 Nenhuma aposta OVER 0.5 com boa confiança encontrada hoje")
                     
-                    # NOVA SEÇÃO: Lista completa de jogos
-                    display_all_games_list(predictions)
+                    # Lista completa de jogos simplificada
+                    display_all_games_list_simple(predictions)
                 
                 else:
                     st.info("🤷 Nenhuma previsão disponível (times sem dados históricos)")
