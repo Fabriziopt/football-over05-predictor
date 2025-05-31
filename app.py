@@ -23,30 +23,103 @@ st.set_page_config(
 # SUA API Key - API-Football oficial
 API_KEY = "2aad0db0e5b88b3a080bdc85461a919"
 
-# Modo demonstração (para testar sem gastar requests)
-DEMO_MODE = st.sidebar.checkbox("🎮 Modo Demonstração", value=False, help="Use dados simulados para testar o sistema")
+# Configuração automática do tipo de API
+API_TYPE = None  # Será detectado automaticamente
 
-def check_api_status():
-    """Verifica o status e limites da API"""
-    headers = {
+def detect_api_type():
+    """Detecta automaticamente se é RapidAPI ou API-Football direta"""
+    global API_TYPE
+    
+    # Teste 1: RapidAPI
+    headers_rapid = {
+        'x-rapidapi-key': API_KEY,
+        'x-rapidapi-host': 'api-football-v1.p.rapidapi.com'
+    }
+    
+    try:
+        response = requests.get(
+            'https://api-football-v1.p.rapidapi.com/v3/status',
+            headers=headers_rapid,
+            timeout=5
+        )
+        if response.status_code == 200:
+            API_TYPE = 'rapidapi'
+            return 'rapidapi'
+    except:
+        pass
+    
+    # Teste 2: API-Football direta
+    headers_direct = {
         'x-apisports-key': API_KEY
     }
     
     try:
         response = requests.get(
             'https://v3.football.api-sports.io/status',
+            headers=headers_direct,
+            timeout=5
+        )
+        if response.status_code == 200:
+            API_TYPE = 'direct'
+            return 'direct'
+    except:
+        pass
+    
+    return None
+
+def get_api_headers():
+    """Retorna os headers corretos baseado no tipo de API"""
+    if API_TYPE == 'rapidapi':
+        return {
+            'x-rapidapi-key': API_KEY,
+            'x-rapidapi-host': 'api-football-v1.p.rapidapi.com'
+        }
+    else:
+        return {
+            'x-apisports-key': API_KEY
+        }
+
+def get_api_base_url():
+    """Retorna a URL base correta"""
+    if API_TYPE == 'rapidapi':
+        return 'https://api-football-v1.p.rapidapi.com/v3'
+    else:
+        return 'https://v3.football.api-sports.io'
+
+# Detectar tipo de API na inicialização
+if API_TYPE is None:
+    API_TYPE = detect_api_type()
+
+def check_api_status():
+    """Verifica o status e limites da API"""
+    headers = get_api_headers()
+    base_url = get_api_base_url()
+    
+    try:
+        response = requests.get(
+            f'{base_url}/status',
             headers=headers,
             timeout=10
         )
         
         if response.status_code == 200:
             data = response.json()
-            if 'response' in data:
+            if 'response' in data and isinstance(data['response'], dict):
                 status = data['response']
-                requests_remaining = status.get('requests', {}).get('limit_day', 0) - status.get('requests', {}).get('current', 0)
-                return True, requests_remaining, status
+                requests_info = status.get('requests', {})
+                if isinstance(requests_info, dict):
+                    limit_day = requests_info.get('limit_day', 0)
+                    current = requests_info.get('current', 0)
+                    requests_remaining = limit_day - current
+                    return True, requests_remaining, status
             elif 'errors' in data:
-                return False, 0, data['errors']
+                if isinstance(data['errors'], dict):
+                    error_msg = data['errors'].get('token', 'Unknown error')
+                elif isinstance(data['errors'], list) and data['errors']:
+                    error_msg = data['errors'][0] if data['errors'] else 'Unknown error'
+                else:
+                    error_msg = str(data['errors'])
+                return False, 0, error_msg
         return False, 0, f"Status Code: {response.status_code}"
     except Exception as e:
         return False, 0, str(e)
@@ -122,23 +195,16 @@ def get_fixtures_cached(date_str):
 
 def get_fixtures(date_str):
     """Busca jogos da API-Football"""
-    headers = {
-        'x-apisports-key': API_KEY
-    }
-    
-    # Debug - verificar se a key está sendo enviada
-    st.write(f"Debug - API Key (primeiros 10 chars): {API_KEY[:10]}...")
+    headers = get_api_headers()
+    base_url = get_api_base_url()
     
     try:
         response = requests.get(
-            'https://v3.football.api-sports.io/fixtures',
+            f'{base_url}/fixtures',
             headers=headers,
             params={'date': date_str},
             timeout=20
         )
-        
-        # Debug
-        st.write(f"Debug - Status Code: {response.status_code}")
         
         if response.status_code == 200:
             data = response.json()
@@ -149,7 +215,6 @@ def get_fixtures(date_str):
                 return []
             
             fixtures = data.get('response', [])
-            st.write(f"Debug - Fixtures encontradas: {len(fixtures)}")
             return fixtures
         else:
             st.error(f"Erro API: {response.status_code}")
@@ -720,49 +785,48 @@ def main():
                 st.write(f"API Key length: {len(API_KEY)}")
                 st.write(f"API Key (primeiros/últimos chars): {API_KEY[:5]}...{API_KEY[-5:]}")
                 
-                # Teste 1: com x-apisports-key
+                # Teste 1: API-Football direta
+                st.write("\n**Teste 1: API-Football Direta**")
                 headers1 = {
                     'x-apisports-key': API_KEY
                 }
                 
                 try:
-                    st.write("Teste 1: Usando header 'x-apisports-key'")
+                    # Tentar endpoint da API-Football direta
                     response = requests.get(
-                        'https://v3.football.api-sports.io/status',
-                        headers=headers1,
+                        'https://api-football-v1.p.rapidapi.com/v3/status',
+                        headers={
+                            'x-rapidapi-key': API_KEY,
+                            'x-rapidapi-host': 'api-football-v1.p.rapidapi.com'
+                        },
                         timeout=10
                     )
-                    st.write(f"Status Code: {response.status_code}")
+                    st.write(f"RapidAPI Status Code: {response.status_code}")
                     if response.status_code == 200:
-                        data = response.json()
-                        st.success("✅ API conectada!")
-                        st.json(data)
-                    else:
-                        st.error(f"❌ Erro: {response.status_code}")
+                        st.success("✅ Sua API é do RapidAPI!")
                         st.json(response.json())
+                        
+                        # Atualizar configuração global
+                        st.warning("⚠️ Detectamos que você está usando RapidAPI. Atualize o código para usar os endpoints corretos.")
+                    else:
+                        # Tentar API-Football direta
+                        response2 = requests.get(
+                            'https://v3.football.api-sports.io/status',
+                            headers=headers1,
+                            timeout=10
+                        )
+                        st.write(f"API-Football Direct Status Code: {response2.status_code}")
+                        if response2.status_code == 200:
+                            st.success("✅ Sua API é da API-Football direta!")
+                            st.json(response2.json())
+                        else:
+                            st.error("❌ Não conseguimos identificar o tipo de API")
+                            if response2.status_code == 200:
+                                st.json(response2.json())
+                            else:
+                                st.error(response2.text)
                 except Exception as e:
                     st.error(f"❌ Erro: {str(e)}")
-                
-                # Teste 2: com x-rapidapi-key (caso esteja usando via RapidAPI)
-                headers2 = {
-                    'x-rapidapi-key': API_KEY,
-                    'x-rapidapi-host': 'v3.football.api-sports.io'
-                }
-                
-                try:
-                    st.write("\nTeste 2: Usando header 'x-rapidapi-key'")
-                    response = requests.get(
-                        'https://v3.football.api-sports.io/status',
-                        headers=headers2,
-                        timeout=10
-                    )
-                    st.write(f"Status Code: {response.status_code}")
-                    if response.status_code == 200:
-                        data = response.json()
-                        st.success("✅ API conectada com RapidAPI!")
-                        st.json(data)
-                except:
-                    pass
         
         if st.button("🚀 Iniciar Treinamento", type="primary"):
             # Coletar dados
