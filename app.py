@@ -126,6 +126,9 @@ def get_fixtures(date_str):
         'x-apisports-key': API_KEY
     }
     
+    # Debug - verificar se a key está sendo enviada
+    st.write(f"Debug - API Key (primeiros 10 chars): {API_KEY[:10]}...")
+    
     try:
         response = requests.get(
             'https://v3.football.api-sports.io/fixtures',
@@ -713,13 +716,20 @@ def main():
         # Botão de teste de API
         if st.button("🔌 Testar Conexão API", type="secondary"):
             with st.spinner("Testando conexão..."):
-                headers = {
+                # Mostrar informações de debug
+                st.write(f"API Key length: {len(API_KEY)}")
+                st.write(f"API Key (primeiros/últimos chars): {API_KEY[:5]}...{API_KEY[-5:]}")
+                
+                # Teste 1: com x-apisports-key
+                headers1 = {
                     'x-apisports-key': API_KEY
                 }
+                
                 try:
+                    st.write("Teste 1: Usando header 'x-apisports-key'")
                     response = requests.get(
                         'https://v3.football.api-sports.io/status',
-                        headers=headers,
+                        headers=headers1,
                         timeout=10
                     )
                     st.write(f"Status Code: {response.status_code}")
@@ -729,9 +739,30 @@ def main():
                         st.json(data)
                     else:
                         st.error(f"❌ Erro: {response.status_code}")
-                        st.text(response.text)
+                        st.json(response.json())
                 except Exception as e:
                     st.error(f"❌ Erro: {str(e)}")
+                
+                # Teste 2: com x-rapidapi-key (caso esteja usando via RapidAPI)
+                headers2 = {
+                    'x-rapidapi-key': API_KEY,
+                    'x-rapidapi-host': 'v3.football.api-sports.io'
+                }
+                
+                try:
+                    st.write("\nTeste 2: Usando header 'x-rapidapi-key'")
+                    response = requests.get(
+                        'https://v3.football.api-sports.io/status',
+                        headers=headers2,
+                        timeout=10
+                    )
+                    st.write(f"Status Code: {response.status_code}")
+                    if response.status_code == 200:
+                        data = response.json()
+                        st.success("✅ API conectada com RapidAPI!")
+                        st.json(data)
+                except:
+                    pass
         
         if st.button("🚀 Iniciar Treinamento", type="primary"):
             # Coletar dados
