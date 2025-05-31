@@ -292,7 +292,7 @@ def extract_match_features(match):
         return None
 
 def prepare_ml_features(df):
-    """Prepara features para o modelo ML"""
+    """Prepara features para o modelo ML com métricas avançadas e normalização de outliers"""
     # Garantir que temos as colunas necessárias
     if 'over_05' not in df.columns and 'ht_home' in df.columns and 'ht_away' in df.columns:
         df['over_05'] = (df['ht_home'] + df['ht_away']) > 0
@@ -324,16 +324,48 @@ def prepare_ml_features(df):
         
         if home_team not in team_stats:
             team_stats[home_team] = {
-                'games': 0, 'over_05': 0, 'goals_scored': 0, 'goals_conceded': 0,
-                'home_games': 0, 'home_over': 0, 'home_goals': 0,
-                'away_games': 0, 'away_over': 0, 'away_goals': 0
+                'games': 0, 
+                'over_05': 0, 
+                'over_05_binary': 0,  # NOVO: conta apenas se teve Over (1) ou não (0)
+                'goals_scored': 0, 
+                'goals_conceded': 0,
+                'goals_capped': 0,  # NOVO: gols com cap de 1
+                'home_games': 0, 
+                'home_over': 0, 
+                'home_over_binary': 0,  # NOVO
+                'home_goals': 0,
+                'home_goals_capped': 0,  # NOVO
+                'away_games': 0, 
+                'away_over': 0,
+                'away_over_binary': 0,  # NOVO
+                'away_goals': 0,
+                'away_goals_capped': 0,  # NOVO
+                'goals_list': [],
+                'over_list': [],
+                'extreme_games': 0  # NOVO: conta jogos com mais de 2 gols HT
             }
         
         if away_team not in team_stats:
             team_stats[away_team] = {
-                'games': 0, 'over_05': 0, 'goals_scored': 0, 'goals_conceded': 0,
-                'home_games': 0, 'home_over': 0, 'home_goals': 0,
-                'away_games': 0, 'away_over': 0, 'away_goals': 0
+                'games': 0, 
+                'over_05': 0,
+                'over_05_binary': 0,  # NOVO
+                'goals_scored': 0, 
+                'goals_conceded': 0,
+                'goals_capped': 0,  # NOVO
+                'home_games': 0, 
+                'home_over': 0,
+                'home_over_binary': 0,  # NOVO
+                'home_goals': 0,
+                'home_goals_capped': 0,  # NOVO
+                'away_games': 0, 
+                'away_over': 0,
+                'away_over_binary': 0,  # NOVO
+                'away_goals': 0,
+                'away_goals_capped': 0,  # NOVO
+                'goals_list': [],
+                'over_list': [],
+                'extreme_games': 0  # NOVO
             }
     
     # Calcular features
@@ -345,30 +377,109 @@ def prepare_ml_features(df):
         
         # Features do time da casa
         home_stats = team_stats[home_id]
+        
+        # TAXAS BINÁRIAS (o que você sugeriu - conta apenas se foi Over ou não)
+        home_over_rate_binary = home_stats['over_05_binary'] / max(home_stats['games'], 1)
+        home_home_over_rate_binary = home_stats['home_over_binary'] / max(home_stats['home_games'], 1)
+        
+        # MÉDIAS COM CAP (limita impacto de jogos extremos)
+        home_avg_goals_capped = home_stats['goals_capped'] / max(home_stats['games'], 1)
+        home_home_avg_goals_capped = home_stats['home_goals_capped'] / max(home_stats['home_games'], 1)
+        
+        # Métricas tradicionais (para comparação)
         home_over_rate = home_stats['over_05'] / max(home_stats['games'], 1)
         home_avg_goals = home_stats['goals_scored'] / max(home_stats['games'], 1)
         home_home_over_rate = home_stats['home_over'] / max(home_stats['home_games'], 1)
         
+        # Taxa de jogos extremos
+        home_extreme_rate = home_stats['extreme_games'] / max(home_stats['games'], 1)
+        
         # Features do time visitante
         away_stats = team_stats[away_id]
+        
+        # TAXAS BINÁRIAS
+        away_over_rate_binary = away_stats['over_05_binary'] / max(away_stats['games'], 1)
+        away_away_over_rate_binary = away_stats['away_over_binary'] / max(away_stats['away_games'], 1)
+        
+        # MÉDIAS COM CAP
+        away_avg_goals_capped = away_stats['goals_capped'] / max(away_stats['games'], 1)
+        away_away_avg_goals_capped = away_stats['away_goals_capped'] / max(away_stats['away_games'], 1)
+        
+        # Métricas tradicionais
         away_over_rate = away_stats['over_05'] / max(away_stats['games'], 1)
         away_avg_goals = away_stats['goals_scored'] / max(away_stats['games'], 1)
         away_away_over_rate = away_stats['away_over'] / max(away_stats['away_games'], 1)
         
+        # Taxa de jogos extremos
+        away_extreme_rate = away_stats['extreme_games'] / max(away_stats['games'], 1)
+        
         # Features da liga
         league_games = df[df['league_id'] == row['league_id']]
         league_over_rate = league_games['over_05'].mean() if len(league_games) > 0 else 0.5
+        league_over_rate_binary = (league_games['over_05'] > 0).mean() if len(league_games) > 0 else 0.5
+        
+        # FEATURES AVANÇADAS COM NOVA LÓGICA
+        
+        # 1. Combined Score Binário (usa taxa binária)
+        home_strength_binary = home_over_rate_binary * home_avg_goals_capped
+        away_strength_binary = away_over_rate_binary * away_avg_goals_capped
+        combined_score_binary = home_strength_binary + away_strength_binary
+        
+        # 2. Eficiência de Over (quantos gols precisa em média para fazer Over)
+        home_efficiency = home_avg_goals / home_over_rate_binary if home_over_rate_binary > 0 else 10
+        away_efficiency = away_avg_goals / away_over_rate_binary if away_over_rate_binary > 0 else 10
+        combined_efficiency = (home_efficiency + away_efficiency) / 2
+        
+        # 3. Consistência Binária (desvio das taxas de Over)
+        if len(home_stats['over_list']) > 1:
+            home_consistency = 1 - np.std(home_stats['over_list'])
+        else:
+            home_consistency = 0.5
+            
+        if len(away_stats['over_list']) > 1:
+            away_consistency = 1 - np.std(away_stats['over_list'])
+        else:
+            away_consistency = 0.5
+        
+        # 4. Momentum Binário (últimos 5 jogos - Over ou não)
+        home_recent = home_stats['over_list'][-5:] if len(home_stats['over_list']) >= 5 else home_stats['over_list']
+        away_recent = away_stats['over_list'][-5:] if len(away_stats['over_list']) >= 5 else away_stats['over_list']
+        
+        home_momentum = sum([1 if x > 0 else 0 for x in home_recent]) / len(home_recent) if home_recent else home_over_rate_binary
+        away_momentum = sum([1 if x > 0 else 0 for x in away_recent]) / len(away_recent) if away_recent else away_over_rate_binary
+        
+        # 5. Risco de Outlier (baseado em jogos extremos)
+        outlier_risk = (home_extreme_rate + away_extreme_rate) / 2
         
         feature_row = {
+            # Features binárias (principais)
+            'home_over_rate_binary': home_over_rate_binary,
+            'home_avg_goals_capped': home_avg_goals_capped,
+            'home_home_over_rate_binary': home_home_over_rate_binary,
+            'away_over_rate_binary': away_over_rate_binary,
+            'away_avg_goals_capped': away_avg_goals_capped,
+            'away_away_over_rate_binary': away_away_over_rate_binary,
+            'league_over_rate_binary': league_over_rate_binary,
+            'combined_over_rate_binary': (home_over_rate_binary + away_over_rate_binary) / 2,
+            'combined_goals_capped': home_avg_goals_capped + away_avg_goals_capped,
+            
+            # Features tradicionais (para comparação)
             'home_over_rate': home_over_rate,
-            'home_avg_goals': home_avg_goals,
-            'home_home_over_rate': home_home_over_rate,
             'away_over_rate': away_over_rate,
-            'away_avg_goals': away_avg_goals,
-            'away_away_over_rate': away_away_over_rate,
-            'league_over_rate': league_over_rate,
-            'combined_over_rate': (home_over_rate + away_over_rate) / 2,
             'combined_goals': home_avg_goals + away_avg_goals,
+            
+            # Features avançadas
+            'combined_score_binary': combined_score_binary,
+            'combined_efficiency': 1 / combined_efficiency if combined_efficiency > 0 else 0,
+            'home_consistency': home_consistency,
+            'away_consistency': away_consistency,
+            'consistency_avg': (home_consistency + away_consistency) / 2,
+            'home_momentum': home_momentum,
+            'away_momentum': away_momentum,
+            'momentum_sum': home_momentum + away_momentum,
+            'outlier_risk': outlier_risk,
+            'extreme_game_factor': 1 - outlier_risk,  # Penaliza times com muitos jogos extremos
+            
             'target': row['over_05']
         }
         
@@ -377,22 +488,40 @@ def prepare_ml_features(df):
         # Atualizar stats após o jogo
         ht_home_goals = row.get('ht_home_goals', row.get('ht_home', 0))
         ht_away_goals = row.get('ht_away_goals', row.get('ht_away', 0))
+        ht_total = ht_home_goals + ht_away_goals
         
+        # Stats binários/capped
         team_stats[home_id]['games'] += 1
         team_stats[home_id]['over_05'] += row['over_05']
+        team_stats[home_id]['over_05_binary'] += 1 if row['over_05'] > 0 else 0  # Conta apenas se foi Over
         team_stats[home_id]['goals_scored'] += ht_home_goals
+        team_stats[home_id]['goals_capped'] += min(ht_home_goals, 1)  # Cap em 1 gol
         team_stats[home_id]['goals_conceded'] += ht_away_goals
         team_stats[home_id]['home_games'] += 1
         team_stats[home_id]['home_over'] += row['over_05']
+        team_stats[home_id]['home_over_binary'] += 1 if row['over_05'] > 0 else 0
         team_stats[home_id]['home_goals'] += ht_home_goals
+        team_stats[home_id]['home_goals_capped'] += min(ht_home_goals, 1)
+        team_stats[home_id]['goals_list'].append(ht_home_goals)
+        team_stats[home_id]['over_list'].append(row['over_05'])
+        if ht_total > 2:  # Jogo extremo
+            team_stats[home_id]['extreme_games'] += 1
         
         team_stats[away_id]['games'] += 1
         team_stats[away_id]['over_05'] += row['over_05']
+        team_stats[away_id]['over_05_binary'] += 1 if row['over_05'] > 0 else 0
         team_stats[away_id]['goals_scored'] += ht_away_goals
+        team_stats[away_id]['goals_capped'] += min(ht_away_goals, 1)
         team_stats[away_id]['goals_conceded'] += ht_home_goals
         team_stats[away_id]['away_games'] += 1
         team_stats[away_id]['away_over'] += row['over_05']
+        team_stats[away_id]['away_over_binary'] += 1 if row['over_05'] > 0 else 0
         team_stats[away_id]['away_goals'] += ht_away_goals
+        team_stats[away_id]['away_goals_capped'] += min(ht_away_goals, 1)
+        team_stats[away_id]['goals_list'].append(ht_away_goals)
+        team_stats[away_id]['over_list'].append(row['over_05'])
+        if ht_total > 2:  # Jogo extremo
+            team_stats[away_id]['extreme_games'] += 1
     
     return pd.DataFrame(features), team_stats
 
