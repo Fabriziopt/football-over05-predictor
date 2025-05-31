@@ -11,7 +11,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# SUA API Key
+# SUA API Key - API-Football oficial
 API_KEY = "2aad0db0e5b88b3a080bdc85461a919"
 
 # CSS
@@ -53,24 +53,30 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 def get_real_fixtures(date):
-    """Busca jogos REAIS da API-Football"""
+    """Busca jogos REAIS da API-Football oficial"""
     headers = {
-        'X-RapidAPI-Key': API_KEY,
-        'X-RapidAPI-Host': 'v3.football.api-sports.io'
+        'x-apisports-key': API_KEY  # Header correto para API-Football oficial
     }
     
     date_str = date.strftime('%Y-%m-%d')
     
     try:
         response = requests.get(
-            'https://v3.football.api-sports.io/fixtures',
+            'https://v3.football.api-sports.io/fixtures',  # URL correta
             headers=headers,
             params={'date': date_str},
             timeout=20
         )
         
+        st.write(f"Status Code: {response.status_code}")  # Debug
+        
         if response.status_code == 200:
             data = response.json()
+            # Debug: mostrar resposta
+            if 'errors' in data and data['errors']:
+                st.error(f"Erro da API: {data['errors']}")
+                return [], "❌ Erro na API"
+            
             matches = data.get('response', [])
             return matches, f"✅ {len(matches)} jogos reais encontrados"
         
@@ -95,23 +101,39 @@ def get_real_historical_data(days=14):
     
     successful_days = 0
     
+    headers = {
+        'x-apisports-key': API_KEY  # Header correto
+    }
+    
     for i in range(days):
         date = datetime.now() - timedelta(days=i+1)
+        date_str = date.strftime('%Y-%m-%d')
         status_text.text(f"📊 Buscando dados reais: {date.strftime('%d/%m/%Y')} ({i+1}/{days})")
         
-        matches, message = get_real_fixtures(date)
-        
-        if matches:
-            # Apenas jogos finalizados com dados do primeiro tempo
-            finished_matches = []
-            for match in matches:
-                if (match['fixture']['status']['short'] == 'FT' and 
-                    match.get('score', {}).get('halftime', {}).get('home') is not None):
-                    finished_matches.append(match)
+        try:
+            response = requests.get(
+                'https://v3.football.api-sports.io/fixtures',
+                headers=headers,
+                params={'date': date_str},
+                timeout=20
+            )
             
-            if finished_matches:
-                all_matches.extend(finished_matches)
-                successful_days += 1
+            if response.status_code == 200:
+                data = response.json()
+                matches = data.get('response', [])
+                
+                # Apenas jogos finalizados com dados do primeiro tempo
+                finished_matches = []
+                for match in matches:
+                    if (match['fixture']['status']['short'] == 'FT' and 
+                        match.get('score', {}).get('halftime', {}).get('home') is not None):
+                        finished_matches.append(match)
+                
+                if finished_matches:
+                    all_matches.extend(finished_matches)
+                    successful_days += 1
+        except:
+            pass
         
         progress_bar.progress((i+1)/days)
         time.sleep(0.5)  # Rate limiting
@@ -329,9 +351,31 @@ def main():
         st.header(f"🎯 Análise Over 0.5 HT - {selected_date.strftime('%d/%m/%Y')}")
         st.info("🌍 Buscando jogos reais de todas as ligas mundiais via API-Football")
         
+        # Teste de conexão
+        if st.button("🔌 Testar Conexão API", type="secondary"):
+            with st.spinner("Testando conexão..."):
+                headers = {
+                    'x-apisports-key': API_KEY
+                }
+                try:
+                    response = requests.get(
+                        'https://v3.football.api-sports.io/status',
+                        headers=headers,
+                        timeout=10
+                    )
+                    if response.status_code == 200:
+                        data = response.json()
+                        st.success("✅ API conectada com sucesso!")
+                        st.json(data)
+                    else:
+                        st.error(f"❌ Erro: Status {response.status_code}")
+                        st.text(response.text)
+                except Exception as e:
+                    st.error(f"❌ Erro de conexão: {str(e)}")
+        
         if st.button("🚀 BUSCAR JOGOS REAIS", type="primary"):
             # Buscar jogos de hoje
-            with st.spinner("🔍 Buscando jogos reais de hoje..."):
+            with st.spinner("🔍 Buscando jogos reais..."):
                 today_fixtures, message = get_real_fixtures(selected_date)
             
             st.info(message)
