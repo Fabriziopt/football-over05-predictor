@@ -26,130 +26,16 @@ st.set_page_config(
 try:
     API_KEY = st.secrets["API_KEY"]
 except:
-    # ATENÇÃO: Em produção, sempre use st.secrets!
-    # Esta key aqui é apenas para desenvolvimento local
-    API_KEY = "474f15de5b22951077ccb71b8d75b85c"
+    # ATENÇÃO: Esta é apenas para teste local. Use st.secrets em produção!
+    API_KEY = "474f15de5b22951077ccb71b8d75b95c"
 
 # URL base da API-SPORTS
 API_BASE_URL = "https://v3.football.api-sports.io"
 
-def get_api_headers():
-    """Retorna os headers corretos para API-SPORTS"""
-    return {
-        'x-apisports-key': API_KEY
-    }
-
-def check_api_status():
-    """Verifica o status e limites da API"""
-    headers = get_api_headers()
-    
-    try:
-        response = requests.get(
-            f'{API_BASE_URL}/status',
-            headers=headers,
-            timeout=10
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
-            if 'response' in data:
-                status = data['response']
-                account = status.get('account', {})
-                subscription = status.get('subscription', {})
-                requests_info = status.get('requests', {})
-                
-                requests_remaining = requests_info.get('limit_day', 0) - requests_info.get('current', 0)
-                
-                return True, requests_remaining, {
-                    'account': account,
-                    'subscription': subscription,
-                    'requests': requests_info
-                }
-            elif 'errors' in data and data['errors']:
-                error_msg = str(data['errors'])
-                return False, 0, error_msg
-        else:
-            return False, 0, f"Status Code: {response.status_code}"
-    except Exception as e:
-        return False, 0, str(e)
-
-def get_fixtures(date_str):
-    """Busca jogos da API-Football"""
-    headers = get_api_headers()
-    
-    try:
-        response = requests.get(
-            f'{API_BASE_URL}/fixtures',
-            headers=headers,
-            params={'date': date_str},
-            timeout=20
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
-            
-            # Verificar se há erros na resposta
-            if 'errors' in data and data['errors']:
-                st.error(f"Erro da API: {data['errors']}")
-                return []
-            
-            fixtures = data.get('response', [])
-            return fixtures
-        else:
-            st.error(f"Erro API: {response.status_code}")
-            try:
-                error_data = response.json()
-                st.error(f"Detalhes: {error_data}")
-            except:
-                st.error(f"Resposta: {response.text}")
-            return []
-    except Exception as e:
-        st.error(f"Erro de conexão: {str(e)}")
-        return []
-
-def check_api_status():
-    """Verifica o status e limites da API"""
-    headers = get_api_headers()
-    
-    try:
-        response = requests.get(
-            f'{API_BASE_URL}/status',
-            headers=headers,
-            timeout=10
-        )
-        
-        if response.status_code == 200:
-            data = response.json()
-            if 'response' in data:
-                status = data['response']
-                account = status.get('account', {})
-                subscription = status.get('subscription', {})
-                requests_info = status.get('requests', {})
-                
-                requests_remaining = requests_info.get('limit_day', 0) - requests_info.get('current', 0)
-                
-                return True, requests_remaining, {
-                    'account': account,
-                    'subscription': subscription,
-                    'requests': requests_info
-                }
-            elif 'errors' in data and data['errors']:
-                error_msg = str(data['errors'])
-                return False, 0, error_msg
-        else:
-            return False, 0, f"Status Code: {response.status_code}"
-    except Exception as e:
-        return False, 0, str(e)
-
-# Verificar status da API no início
-api_ok, requests_left, api_status = check_api_status()
-
-if not api_ok:
-    st.sidebar.error("❌ Problema com a API")
-    st.sidebar.error(f"Erro: {api_status}")
-else:
-    st.sidebar.success(f"✅ API conectada")
-    st.sidebar.info(f"📊 Requests restantes hoje: {requests_left}")
+# Diretório para salvar modelos
+MODEL_DIR = "models"
+if not os.path.exists(MODEL_DIR):
+    os.makedirs(MODEL_DIR)
 
 # CSS Profissional
 st.markdown("""
@@ -204,6 +90,52 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+def get_api_headers():
+    """Retorna os headers corretos para API-SPORTS"""
+    return {
+        'x-apisports-key': API_KEY
+    }
+
+def check_api_status():
+    """Verifica o status e limites da API"""
+    headers = get_api_headers()
+    
+    try:
+        response = requests.get(
+            f'{API_BASE_URL}/status',
+            headers=headers,
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            if 'response' in data:
+                status = data['response']
+                account = status.get('account', {})
+                subscription = status.get('subscription', {})
+                requests_info = status.get('requests', {})
+                
+                requests_remaining = requests_info.get('limit_day', 0) - requests_info.get('current', 0)
+                
+                return True, requests_remaining, {
+                    'account': account,
+                    'subscription': subscription,
+                    'requests': requests_info
+                }
+            elif 'errors' in data:
+                # Tratamento melhorado de erros
+                if isinstance(data['errors'], list) and len(data['errors']) > 0:
+                    error_msg = data['errors'][0]
+                elif isinstance(data['errors'], dict):
+                    error_msg = data['errors'].get('token', str(data['errors']))
+                else:
+                    error_msg = str(data['errors'])
+                return False, 0, error_msg
+        else:
+            return False, 0, f"Status Code: {response.status_code}"
+    except Exception as e:
+        return False, 0, str(e)
+
 # Cache para armazenar dados
 @st.cache_data(ttl=3600)
 def get_fixtures_cached(date_str):
@@ -213,11 +145,10 @@ def get_fixtures_cached(date_str):
 def get_fixtures(date_str):
     """Busca jogos da API-Football"""
     headers = get_api_headers()
-    base_url = get_api_base_url()
     
     try:
         response = requests.get(
-            f'{base_url}/fixtures',
+            f'{API_BASE_URL}/fixtures',
             headers=headers,
             params={'date': date_str},
             timeout=20
