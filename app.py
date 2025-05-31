@@ -166,6 +166,23 @@ def get_fixtures(date_str):
         st.error(f"Erro de conexão: {str(e)}")
         return []
 
+def get_fixture_events(fixture_id):
+    """Busca eventos de um jogo específico (incluindo tempo dos gols)"""
+    headers = get_api_headers()
+    try:
+        response = requests.get(
+            f'{API_BASE_URL}/fixtures/events',
+            headers=headers,
+            params={'fixture': fixture_id},
+            timeout=10
+        )
+        if response.status_code == 200:
+            data = response.json()
+            return data.get('response', [])
+        return []
+    except:
+        return []
+
 def load_historical_data():
     data_files = [
         "data/historical_matches.parquet",
@@ -248,7 +265,19 @@ def extract_match_features_accuracy(match):
         referee = match['fixture']['referee'] if match['fixture']['referee'] else 'Unknown'
         
         # Tempo estimado do primeiro gol
-        if ht_home > 0 or ht_away > 0:
+        events = get_fixture_events(match['fixture']['id']) if match['fixture']['status']['short'] == 'FT' else []
+        first_goal_time = 90  # Default se não houver gols
+        
+        # Buscar tempo real do primeiro gol nos eventos
+        goal_events = [e for e in events if e['type'] == 'Goal' and e['detail'] != 'Missed Penalty']
+        if goal_events:
+            # Ordenar por tempo e pegar o primeiro
+            goal_times = [e['time']['elapsed'] for e in goal_events if e['time']['elapsed'] is not None]
+            if goal_times:
+                first_goal_time = min(goal_times)
+        
+        # Se não conseguiu dos eventos, estimar baseado no resultado
+        elif ht_home > 0 or ht_away > 0:
             # Se houve gol no HT, estimar tempo baseado no número de gols
             if ht_home + ht_away >= 2:
                 first_goal_time = 15  # Múltiplos gols = start rápido
@@ -256,8 +285,6 @@ def extract_match_features_accuracy(match):
                 first_goal_time = 30  # 1 gol = tempo médio
         elif ft_home > 0 or ft_away > 0:
             first_goal_time = 65  # Gol só no segundo tempo
-        else:
-            first_goal_time = 90  # Sem gols
         
         # Análise temporal para ACURÁCIA
         match_date = datetime.strptime(match['fixture']['date'][:10], '%Y-%m-%d')
@@ -654,20 +681,56 @@ def prepare_accuracy_features(df):
 
 def train_accuracy_model(df):
     """Treina modelo OTIMIZADO ESPECIFICAMENTE PARA MÁXIMA ACURÁCIA"""
+    
+    # Verificar se temos dados suficientes
+    if len(df) < 50:
+        st.error(f"❌ Dados insuficientes para treinar: apenas {len(df)} jogos. Mínimo necessário: 50")
+        return None, {}
+    
     st.info("🎯 Preparando sistema ULTIMATE focado em TAXA DE ACERTO máxima...")
     features_df, team_stats, referee_stats, venue_stats = prepare_accuracy_features(df)
+    
+    # Verificar se features foram geradas corretamente
+    if features_df.empty:
+        st.error("❌ Erro ao gerar features. Verifique os dados.")
+        return None, {}
     
     feature_cols = [col for col in features_df.columns if col != 'target']
     X = features_df[feature_cols]
     y = features_df['target']
+    
+    # Verificar balanceamento das classes
+    class_counts = y.value_counts()
+    st.info(f"📊 Distribuição das classes - Over 0.5: {class_counts.get(1, 0)} | Under 0.5: {class_counts.get(0, 0)}")
+    
+    if len(class_counts) < 2:
+        st.error("❌ Dados muito desbalanceados - apenas uma classe presente!")
+        return None, {}
     
     st.info(f"🎯 Total de features para ACURÁCIA: {len(feature_cols)}")
     st.info(f"🔥 Foco: Explosive Starts, Velocidade, Consistência, Momentum")
     
     # VALIDAÇÃO TEMPORAL PARA MÁXIMA ACURÁCIA
     # Usar mais dados para treino (80%) e menos para teste (10% each)
-    X_temp, X_test, y_temp, y_test = train_test_split(X, y, test_size=0.10, random_state=42, shuffle=False, stratify=y)
-    X_train, X_val, y_train, y_val = train_test_split(X_temp, y_temp, test_size=0.111, random_state=42, shuffle=False, stratify=y_temp)
+    
+    # Verificar quantidade mínima de cada classe
+    min_samples_per_class = 5
+    class_counts = y.value_counts()
+    
+    if any(class_counts < min_samples_per_class):
+        st.warning("⚠️ Poucas amostras por classe. Usando split simples sem stratify.")
+        X_temp, X_test, y_temp, y_test = train_test_split(X, y, test_size=0.10, random_state=42)
+        X_train, X_val, y_train, y_val = train_test_split(X_temp, y_temp, test_size=0.111, random_state=42)
+    else:
+        try:
+            # Tenta com stratify se houver amostras suficientes
+            X_temp, X_test, y_temp, y_test = train_test_split(X, y, test_size=0.10, random_state=42, stratify=y)
+            X_train, X_val, y_train, y_val = train_test_split(X_temp, y_temp, test_size=0.111, random_state=42, stratify=y_temp)
+        except ValueError as e:
+            # Se falhar, usa sem stratify
+            st.warning(f"⚠️ Usando split sem stratify: {str(e)}")
+            X_temp, X_test, y_temp, y_test = train_test_split(X, y, test_size=0.10, random_state=42)
+            X_train, X_val, y_train, y_val = train_test_split(X_temp, y_temp, test_size=0.111, random_state=42)
     
     # Normalização
     scaler = StandardScaler()
@@ -736,17 +799,29 @@ def train_accuracy_model(df):
             tscv = TimeSeriesSplit(n_splits=5)
             cv_scores = []
             
-            for train_idx, val_idx in tscv.split(X_train_scaled):
+            # Usar apenas X_train para walk-forward (sem necessidade de novo split)
+            for fold_idx, (train_idx, val_idx) in enumerate(tscv.split(X_train_scaled)):
+                if len(train_idx) < 10 or len(val_idx) < 5:
+                    continue  # Pular folds muito pequenos
+                    
                 X_cv_train, X_cv_val = X_train_scaled[train_idx], X_train_scaled[val_idx]
                 y_cv_train, y_cv_val = y_train.iloc[train_idx], y_train.iloc[val_idx]
+                
+                # Verificar se há ambas as classes no fold
+                if len(np.unique(y_cv_train)) < 2:
+                    continue
                 
                 cv_model = model.__class__(**model.get_params())
                 cv_model.fit(X_cv_train, y_cv_train)
                 cv_pred = cv_model.predict(X_cv_val)
                 cv_scores.append(accuracy_score(y_cv_val, cv_pred))
             
-            cv_mean = np.mean(cv_scores)
-            cv_std = np.std(cv_scores)
+            # Se não há scores suficientes, usar score único de validação
+            if len(cv_scores) < 2:
+                cv_scores = [val_acc]
+                
+            cv_mean = np.mean(cv_scores) if cv_scores else val_acc
+            cv_std = np.std(cv_scores) if len(cv_scores) > 1 else 0.0
             stability = 1 - cv_std  # Medida de estabilidade
             
             results[name] = {
@@ -951,22 +1026,36 @@ def predict_matches_accuracy(fixtures, model_data):
                 'home_explosive_rate': home_explosive_rate,
                 'away_explosive_rate': away_explosive_rate,
                 'combined_explosive_rate': combined_explosive_rate,
+                'home_dominant_rate': home_stats['dominant_starts'] / max(home_stats['games'], 1),
+                'away_dominant_rate': away_stats['dominant_starts'] / max(away_stats['games'], 1),
+                'combined_dominant_rate': (home_stats['dominant_starts'] / max(home_stats['games'], 1) + away_stats['dominant_starts'] / max(away_stats['games'], 1)) / 2,
                 'home_avg_first_goal': home_avg_first_goal,
                 'away_avg_first_goal': away_avg_first_goal,
                 'combined_goal_speed': combined_goal_speed,
                 'speed_factor': speed_factor,
+                'home_balanced_rate': home_stats['balanced_games'] / max(home_stats['games'], 1),
+                'away_balanced_rate': away_stats['balanced_games'] / max(away_stats['games'], 1),
+                'combined_balanced_rate': (home_stats['balanced_games'] / max(home_stats['games'], 1) + away_stats['balanced_games'] / max(away_stats['games'], 1)) / 2,
                 'home_momentum': home_momentum,
                 'away_momentum': away_momentum,
                 'combined_momentum': combined_momentum,
                 'home_consistency': home_consistency,
                 'away_consistency': away_consistency,
                 'combined_consistency': combined_consistency,
+                'home_weekend_over_rate': home_stats['weekend_over'] / max(home_stats['weekend_games'], 1) if home_stats['weekend_games'] > 0 else home_over_rate,
+                'away_weekend_over_rate': away_stats['weekend_over'] / max(away_stats['weekend_games'], 1) if away_stats['weekend_games'] > 0 else away_over_rate,
+                'home_early_season_rate': home_stats['early_season_over'] / max(home_stats['early_season_games'], 1) if home_stats['early_season_games'] > 0 else home_over_rate,
+                'away_early_season_rate': away_stats['early_season_over'] / max(away_stats['early_season_games'], 1) if away_stats['early_season_games'] > 0 else away_over_rate,
                 'ultimate_over_score': ultimate_over_score,
                 'confidence_score': confidence_score,
                 'final_over_probability': final_over_probability,
                 'weekend_game': weekend_game,
                 'seasonal_boost': seasonal_boost,
-                'context_factor': context_factor
+                'context_factor': context_factor,
+                'home_away_synergy': home_over_rate * away_over_rate,
+                'explosive_synergy': home_explosive_rate * away_explosive_rate,
+                'speed_consistency_combo': speed_factor * combined_consistency,
+                'momentum_consistency_combo': combined_momentum * combined_consistency
             }
             
             # Preencher features
@@ -1236,6 +1325,7 @@ def main():
             st.warning("⚠️ Treine um ACCURACY MODEL primeiro!")
         else:
             date_str = selected_date.strftime('%Y-%m-%d')
+            fixtures = get_fixtures_cached(date_str)
             
             if not fixtures:
                 st.info("📅 Nenhum jogo encontrado para esta data")
@@ -1639,6 +1729,13 @@ def main():
                 over_rate = df['over_05'].mean()
                 st.info(f"📊 Taxa Over geral dos dados: {over_rate:.1%}")
                 
+                # Diagnóstico adicional
+                st.info(f"🔍 Diagnóstico dos dados:")
+                st.write(f"- Total de jogos: {len(df)}")
+                st.write(f"- Jogos Over 0.5: {df['over_05'].sum()}")
+                st.write(f"- Jogos Under 0.5: {len(df) - df['over_05'].sum()}")
+                st.write(f"- Colunas disponíveis: {', '.join(df.columns[:10])}...")
+                
                 if over_rate < 0.3:
                     st.warning("⚠️ Taxa Over muito baixa - pode afetar treinamento")
                 elif over_rate > 0.7:
@@ -1649,103 +1746,104 @@ def main():
                 with st.spinner("🎯 Treinando ACCURACY MASTER com features otimizadas..."):
                     model_data, results = train_accuracy_model(df)
                 
-                st.success("🏆 ACCURACY MASTER MODEL treinado com sucesso!")
-                
-                st.subheader("📊 Resultados do ACCURACY TRAINING")
-                
-                # Mostrar resultados com foco em acurácia
-                best_accuracy = 0
-                best_model_name = ""
-                
-                for model_name, metrics in results.items():
-                    col1, col2, col3, col4, col5, col6 = st.columns(6)
+                if model_data:
+                    st.success("🏆 ACCURACY MASTER MODEL treinado com sucesso!")
                     
-                    test_acc = metrics['test_accuracy']
-                    if test_acc > best_accuracy:
-                        best_accuracy = test_acc
-                        best_model_name = model_name
+                    st.subheader("📊 Resultados do ACCURACY TRAINING")
                     
-                    with col1:
-                        st.metric(model_name.replace('_Accuracy', '').replace('_Calibrated', ''), "")
-                    with col2:
-                        accuracy_color = "🎯" if test_acc > 0.7 else "🔥" if test_acc > 0.65 else "✅"
-                        st.metric("ACURÁCIA", f"{accuracy_color} {test_acc:.1%}")
-                    with col3:
-                        cv_acc = metrics['cv_accuracy_mean']
-                        st.metric("CV Accuracy", f"{cv_acc:.1%}±{metrics['cv_accuracy_std']:.1%}")
-                    with col4:
-                        stability = metrics['stability']
-                        stability_color = "🟢" if stability > 0.85 else "🟡" if stability > 0.75 else "🔴"
-                        st.metric("Estabilidade", f"{stability_color} {stability:.1%}")
-                    with col5:
-                        st.metric("Precisão", f"{metrics['precision']:.1%}")
-                    with col6:
-                        st.metric("F1-Score", f"{metrics['f1_score']:.1%}")
-                
-                # Destacar melhor modelo
-                st.success(f"🏆 MELHOR MODELO: {best_model_name} com {best_accuracy:.1%} de acurácia!")
-                
-                # Feature importance para acurácia
-                if hasattr(model_data['model'], 'feature_importances_'):
-                    st.subheader("🎯 Features Mais Importantes para ACURÁCIA")
+                    # Mostrar resultados com foco em acurácia
+                    best_accuracy = 0
+                    best_model_name = ""
                     
-                    feature_importance = pd.DataFrame({
-                        'feature': model_data['feature_cols'],
-                        'importance': model_data['model'].feature_importances_
-                    }).sort_values('importance', ascending=False)
+                    for model_name, metrics in results.items():
+                        col1, col2, col3, col4, col5, col6 = st.columns(6)
+                        
+                        test_acc = metrics['test_accuracy']
+                        if test_acc > best_accuracy:
+                            best_accuracy = test_acc
+                            best_model_name = model_name
+                        
+                        with col1:
+                            st.metric(model_name.replace('_Accuracy', '').replace('_Calibrated', ''), "")
+                        with col2:
+                            accuracy_color = "🎯" if test_acc > 0.7 else "🔥" if test_acc > 0.65 else "✅"
+                            st.metric("ACURÁCIA", f"{accuracy_color} {test_acc:.1%}")
+                        with col3:
+                            cv_acc = metrics['cv_accuracy_mean']
+                            st.metric("CV Accuracy", f"{cv_acc:.1%}±{metrics['cv_accuracy_std']:.1%}")
+                        with col4:
+                            stability = metrics['stability']
+                            stability_color = "🟢" if stability > 0.85 else "🟡" if stability > 0.75 else "🔴"
+                            st.metric("Estabilidade", f"{stability_color} {stability:.1%}")
+                        with col5:
+                            st.metric("Precisão", f"{metrics['precision']:.1%}")
+                        with col6:
+                            st.metric("F1-Score", f"{metrics['f1_score']:.1%}")
                     
-                    # Top 20 features
-                    top_features = feature_importance.head(20)
-                    st.bar_chart(top_features.set_index('feature')['importance'])
+                    # Destacar melhor modelo
+                    st.success(f"🏆 MELHOR MODELO: {best_model_name} com {best_accuracy:.1%} de acurácia!")
                     
-                    # Categorizar features
-                    col1, col2 = st.columns(2)
+                    # Feature importance para acurácia
+                    if hasattr(model_data['model'], 'feature_importances_'):
+                        st.subheader("🎯 Features Mais Importantes para ACURÁCIA")
+                        
+                        feature_importance = pd.DataFrame({
+                            'feature': model_data['feature_cols'],
+                            'importance': model_data['model'].feature_importances_
+                        }).sort_values('importance', ascending=False)
+                        
+                        # Top 20 features
+                        top_features = feature_importance.head(20)
+                        st.bar_chart(top_features.set_index('feature')['importance'])
+                        
+                        # Categorizar features
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.write("**🔥 Top Features de Acurácia:**")
+                            accuracy_features = top_features[top_features['feature'].str.contains('explosive|speed|ultimate|confidence|consistency')]
+                            if not accuracy_features.empty:
+                                for _, row in accuracy_features.head(8).iterrows():
+                                    st.write(f"• **{row['feature']}**: {row['importance']:.3f}")
+                            else:
+                                st.write("Features de acurácia não estão no top 20")
+                        
+                        with col2:
+                            st.write("**📊 Top Features Básicas:**")
+                            basic_features = top_features[top_features['feature'].str.contains('over_rate|avg_goals|momentum')]
+                            if not basic_features.empty:
+                                for _, row in basic_features.head(8).iterrows():
+                                    st.write(f"• **{row['feature']}**: {row['importance']:.3f}")
                     
-                    with col1:
-                        st.write("**🔥 Top Features de Acurácia:**")
-                        accuracy_features = top_features[top_features['feature'].str.contains('explosive|speed|ultimate|confidence|consistency')]
-                        if not accuracy_features.empty:
-                            for _, row in accuracy_features.head(8).iterrows():
-                                st.write(f"• **{row['feature']}**: {row['importance']:.3f}")
-                        else:
-                            st.write("Features de acurácia não estão no top 20")
+                    # Estimativa de performance
+                    st.subheader("🎯 Estimativa de Performance em Produção")
                     
-                    with col2:
-                        st.write("**📊 Top Features Básicas:**")
-                        basic_features = top_features[top_features['feature'].str.contains('over_rate|avg_goals|momentum')]
-                        if not basic_features.empty:
-                            for _, row in basic_features.head(8).iterrows():
-                                st.write(f"• **{row['feature']}**: {row['importance']:.3f}")
-                
-                # Estimativa de performance
-                st.subheader("🎯 Estimativa de Performance em Produção")
-                
-                estimated_accuracy = best_accuracy * 0.95  # Ligeira redução para produção
-                
-                if estimated_accuracy > 0.75:
-                    performance_level = "🎯 ELITE"
-                    performance_color = "success"
-                elif estimated_accuracy > 0.70:
-                    performance_level = "🔥 EXCELENTE"
-                    performance_color = "success"
-                elif estimated_accuracy > 0.65:
-                    performance_level = "✅ MUITO BOM"
-                    performance_color = "info"
-                else:
-                    performance_level = "⚡ BOM"
-                    performance_color = "warning"
-                
-                st.markdown(f"""
-                **Nível de Performance Esperado:** {performance_level}
-                
-                **Taxa de Acerto Estimada:** {estimated_accuracy:.1%}
-                
-                **Comparação com Mercado:**
-                - Tipsters básicos: 45-55%
-                - Sistemas simples: 55-62%
-                - **Seu ACCURACY MASTER**: {estimated_accuracy:.1%}
-                - Diferencial: +{(estimated_accuracy - 0.55)*100:.0f} pontos percentuais
-                """)
+                    estimated_accuracy = best_accuracy * 0.95  # Ligeira redução para produção
+                    
+                    if estimated_accuracy > 0.75:
+                        performance_level = "🎯 ELITE"
+                        performance_color = "success"
+                    elif estimated_accuracy > 0.70:
+                        performance_level = "🔥 EXCELENTE"
+                        performance_color = "success"
+                    elif estimated_accuracy > 0.65:
+                        performance_level = "✅ MUITO BOM"
+                        performance_color = "info"
+                    else:
+                        performance_level = "⚡ BOM"
+                        performance_color = "warning"
+                    
+                    st.markdown(f"""
+                    **Nível de Performance Esperado:** {performance_level}
+                    
+                    **Taxa de Acerto Estimada:** {estimated_accuracy:.1%}
+                    
+                    **Comparação com Mercado:**
+                    - Tipsters básicos: 45-55%
+                    - Sistemas simples: 55-62%
+                    - **Seu ACCURACY MASTER**: {estimated_accuracy:.1%}
+                    - Diferencial: +{(estimated_accuracy - 0.55)*100:.0f} pontos percentuais
+                    """)
         
         # Teste de conectividade
         if st.button("🔌 Testar Conectividade API", type="secondary"):
