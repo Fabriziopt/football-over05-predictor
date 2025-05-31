@@ -764,7 +764,6 @@ def main():
                     if best_bets:
                         for i, pred in enumerate(best_bets[:10]):
                             # Converter horário UTC para Portugal (UTC+0 no inverno, UTC+1 no verão)
-                            from datetime import datetime
                             try:
                                 # Parse do horário UTC
                                 utc_time = datetime.strptime(pred['kickoff'][:16], '%Y-%m-%dT%H:%M')
@@ -793,17 +792,26 @@ def main():
                     
                     # Todas as previsões
                     with st.expander("📋 Ver Todas as Previsões"):
-                        pred_df = pd.DataFrame([{
-                            'Hora PT': datetime.strptime(p['kickoff'][:16], '%Y-%m-%dT%H:%M').strftime('%H:%M'),
-                            'Casa': p['home_team'],
-                            'Fora': p['away_team'],
-                            'Liga': p['league'],
-                            'Previsão': p['prediction'],
-                            'Confiança': f"{p['confidence']:.1f}%"
-                        } for p in predictions])
+                        pred_data = []
+                        for p in predictions:
+                            try:
+                                utc_time = datetime.strptime(p['kickoff'][:16], '%Y-%m-%dT%H:%M')
+                                hora_pt = utc_time.strftime('%H:%M')
+                            except:
+                                hora_pt = p['kickoff'][11:16]
+                            
+                            pred_data.append({
+                                'Hora PT': hora_pt,
+                                'Casa': p['home_team'],
+                                'Fora': p['away_team'],
+                                'Liga': p['league'],
+                                'Previsão': p['prediction'],
+                                'Confiança': f"{p['confidence']:.1f}%",
+                                '_confidence': p['confidence']  # Para ordenação
+                            })
                         
-                        # Ordenar por confiança (decrescente)
-                        pred_df['_confidence'] = [p['confidence'] for p in predictions]
+                        pred_df = pd.DataFrame(pred_data)
+                        # Ordenar por confiança (decrescente) e remover coluna auxiliar
                         pred_df = pred_df.sort_values('_confidence', ascending=False).drop('_confidence', axis=1)
                         
                         st.dataframe(pred_df, use_container_width=True)
