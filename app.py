@@ -20,6 +20,10 @@ st.set_page_config(
     layout="wide"
 )
 
+# Inicializar session state para o modelo
+if 'trained_model' not in st.session_state:
+    st.session_state.trained_model = None
+
 # Configuração da API Key
 # Primeiro tenta ler do Streamlit secrets (produção)
 # Se não encontrar, usa a key diretamente (desenvolvimento local)
@@ -34,8 +38,14 @@ API_BASE_URL = "https://v3.football.api-sports.io"
 
 # Diretório para salvar modelos
 MODEL_DIR = "models"
-if not os.path.exists(MODEL_DIR):
-    os.makedirs(MODEL_DIR)
+try:
+    if not os.path.exists(MODEL_DIR):
+        os.makedirs(MODEL_DIR)
+except Exception as e:
+    st.error(f"Erro ao criar diretório de modelos: {e}")
+    MODEL_DIR = "/tmp/models"  # Usar diretório temporário como fallback
+    if not os.path.exists(MODEL_DIR):
+        os.makedirs(MODEL_DIR)
 
 # CSS Profissional
 st.markdown("""
@@ -392,21 +402,38 @@ def train_ml_model(df):
         'total_samples': len(df)
     }
     
-    # Salvar modelo
-    model_path = os.path.join(MODEL_DIR, f"model_{datetime.now().strftime('%Y%m%d')}.pkl")
-    joblib.dump(model_data, model_path)
+    # Salvar no session state
+    st.session_state.trained_model = model_data
+    
+    # Tentar salvar em arquivo também
+    try:
+        for directory in [MODEL_DIR, "/tmp/models"]:
+            try:
+                if not os.path.exists(directory):
+                    os.makedirs(directory)
+                model_path = os.path.join(directory, f"model_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pkl")
+                joblib.dump(model_data, model_path)
+                break
+            except:
+                pass
+    except:
+        pass
     
     return model_data, results
 
 def load_latest_model():
     """Carrega o modelo mais recente"""
     try:
-        model_files = [f for f in os.listdir(MODEL_DIR) if f.endswith('.pkl')]
-        if model_files:
-            latest_model = sorted(model_files)[-1]
-            return joblib.load(os.path.join(MODEL_DIR, latest_model))
-    except:
-        pass
+        # Tentar ambos os diretórios
+        for directory in [MODEL_DIR, "/tmp/models"]:
+            if os.path.exists(directory):
+                model_files = [f for f in os.listdir(directory) if f.endswith('.pkl')]
+                if model_files:
+                    latest_model = sorted(model_files)[-1]
+                    model_path = os.path.join(directory, latest_model)
+                    return joblib.load(model_path)
+    except Exception as e:
+        st.error(f"Erro ao carregar modelo: {e}")
     return None
 
 def predict_matches(fixtures, model_data):
@@ -573,11 +600,18 @@ def main():
         )
         
         # Status do modelo
-        model_data = load_latest_model()
+        model_data = st.session_state.trained_model or load_latest_model()
         if model_data:
             st.success("✅ Modelo carregado")
             st.info(f"📅 Treinado em: {model_data['training_date']}")
             st.info(f"📊 Amostras: {model_data['total_samples']}")
+            
+            # Mostrar melhor performance
+            if 'results' in model_data:
+                results = model_data['results']
+                best_model = max(results.items(), key=lambda x: x[1]['f1_score'])
+                st.info(f"🏆 Melhor modelo: {best_model[0]}")
+                st.info(f"📈 F1-Score: {best_model[1]['f1_score']:.1%}")
         else:
             st.warning("⚠️ Nenhum modelo encontrado")
     
@@ -591,6 +625,9 @@ def main():
     
     with tab1:
         st.header(f"🎯 Previsões para {selected_date.strftime('%d/%m/%Y')}")
+        
+        # Verificar se há modelo disponível
+        model_data = st.session_state.trained_model or load_latest_model()
         
         if not model_data:
             st.warning("⚠️ Treine um modelo primeiro na aba 'Treinar Modelo'")
