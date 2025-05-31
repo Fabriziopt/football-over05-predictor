@@ -248,20 +248,22 @@ def prepare_ml_features(df):
     # Estatísticas por time
     team_stats = {}
     
+    # Primeiro, inicializar todos os times
     for idx, row in df.iterrows():
-        # Stats time da casa
         home_team = row['home_team_id']
+        away_team = row['away_team_id']
+        
         if home_team not in team_stats:
             team_stats[home_team] = {
                 'games': 0, 'over_05': 0, 'goals_scored': 0, 'goals_conceded': 0,
-                'home_games': 0, 'home_over': 0, 'home_goals': 0
+                'home_games': 0, 'home_over': 0, 'home_goals': 0,
+                'away_games': 0, 'away_over': 0, 'away_goals': 0
             }
         
-        # Stats time visitante
-        away_team = row['away_team_id']
         if away_team not in team_stats:
             team_stats[away_team] = {
                 'games': 0, 'over_05': 0, 'goals_scored': 0, 'goals_conceded': 0,
+                'home_games': 0, 'home_over': 0, 'home_goals': 0,
                 'away_games': 0, 'away_over': 0, 'away_goals': 0
             }
     
@@ -273,16 +275,16 @@ def prepare_ml_features(df):
         away_id = row['away_team_id']
         
         # Features do time da casa
-        home_stats = team_stats.get(home_id, {})
-        home_over_rate = home_stats.get('over_05', 0) / max(home_stats.get('games', 1), 1)
-        home_avg_goals = home_stats.get('goals_scored', 0) / max(home_stats.get('games', 1), 1)
-        home_home_over_rate = home_stats.get('home_over', 0) / max(home_stats.get('home_games', 1), 1)
+        home_stats = team_stats[home_id]
+        home_over_rate = home_stats['over_05'] / max(home_stats['games'], 1)
+        home_avg_goals = home_stats['goals_scored'] / max(home_stats['games'], 1)
+        home_home_over_rate = home_stats['home_over'] / max(home_stats['home_games'], 1)
         
         # Features do time visitante
-        away_stats = team_stats.get(away_id, {})
-        away_over_rate = away_stats.get('over_05', 0) / max(away_stats.get('games', 1), 1)
-        away_avg_goals = away_stats.get('goals_scored', 0) / max(away_stats.get('games', 1), 1)
-        away_away_over_rate = away_stats.get('away_over', 0) / max(away_stats.get('away_games', 1), 1)
+        away_stats = team_stats[away_id]
+        away_over_rate = away_stats['over_05'] / max(away_stats['games'], 1)
+        away_avg_goals = away_stats['goals_scored'] / max(away_stats['games'], 1)
+        away_away_over_rate = away_stats['away_over'] / max(away_stats['away_games'], 1)
         
         # Features da liga
         league_games = df[df['league_id'] == row['league_id']]
