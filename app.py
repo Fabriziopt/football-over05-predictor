@@ -45,411 +45,6 @@ except Exception as e:
     if not os.path.exists(MODEL_DIR):
         os.makedirs(MODEL_DIR)
 
-# CSS COMPLETO - Neumorphism + Cards Limpos
-st.markdown("""
-<style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
-    
-    /* Configuração global neumorphism */
-    .stApp {
-        background: #e0e5ec;
-        font-family: 'Inter', sans-serif;
-        color: #2d3748;
-    }
-    
-    /* Header principal neumorphism */
-    .main-header {
-        background: #e0e5ec;
-        padding: 3rem 2rem;
-        border-radius: 25px;
-        text-align: center;
-        margin-bottom: 2rem;
-        box-shadow: 15px 15px 30px #c8d0e7, -15px -15px 30px #f8ffff;
-        color: #2d3748;
-        position: relative;
-        overflow: hidden;
-    }
-    
-    .main-header::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: -100%;
-        width: 100%;
-        height: 100%;
-        background: linear-gradient(90deg, transparent, rgba(102, 126, 234, 0.05), transparent);
-        animation: shine 4s infinite;
-    }
-    
-    @keyframes shine {
-        0% { left: -100%; }
-        50%, 100% { left: 100%; }
-    }
-    
-    .main-header h1 {
-        color: #667eea;
-        font-size: 2.5rem;
-        font-weight: 800;
-        margin-bottom: 0.5rem;
-        text-shadow: 2px 2px 4px rgba(102, 126, 234, 0.1);
-    }
-    
-    .main-header p {
-        color: #718096;
-        font-size: 1.1rem;
-        font-weight: 500;
-    }
-    
-    /* Cards neumorphism modernos */
-    .metric-card {
-        background: #e0e5ec;
-        padding: 2rem 1.5rem;
-        border-radius: 20px;
-        box-shadow: 9px 9px 18px #c8d0e7, -9px -9px 18px #f8ffff;
-        text-align: center;
-        transition: all 0.4s cubic-bezier(0.175, 0.885, 0.32, 1.275);
-        color: #2d3748;
-        border: none;
-        position: relative;
-        overflow: hidden;
-    }
-    
-    .metric-card::before {
-        content: '';
-        position: absolute;
-        top: 0;
-        left: 0;
-        right: 0;
-        bottom: 0;
-        background: linear-gradient(135deg, transparent 0%, rgba(102, 126, 234, 0.02) 50%, transparent 100%);
-        opacity: 0;
-        transition: opacity 0.3s ease;
-    }
-    
-    .metric-card:hover::before {
-        opacity: 1;
-    }
-    
-    .metric-card:hover {
-        box-shadow: inset 9px 9px 18px #c8d0e7, inset -9px -9px 18px #f8ffff;
-        transform: scale(0.98);
-    }
-    
-    .metric-card h1 {
-        color: #667eea;
-        font-size: 2.8rem;
-        font-weight: 800;
-        margin: 0.5rem 0;
-        text-shadow: 1px 1px 2px rgba(102, 126, 234, 0.1);
-    }
-    
-    .metric-card h3 {
-        color: #4a5568;
-        font-size: 1rem;
-        font-weight: 600;
-        margin: 0;
-        text-transform: uppercase;
-        letter-spacing: 0.5px;
-    }
-    
-    /* Cards simples e limpos */
-    .prediction-card-simple {
-        background: #e0e5ec;
-        border-radius: 16px;
-        padding: 1.5rem;
-        margin: 1rem 0;
-        box-shadow: 8px 8px 16px #c8d0e7, -8px -8px 16px #f8ffff;
-        transition: all 0.3s ease;
-        border: none;
-    }
-    
-    .prediction-card-simple:hover {
-        transform: translateY(-2px);
-        box-shadow: 10px 10px 20px #c8d0e7, -10px -10px 20px #f8ffff;
-    }
-    
-    .card-header {
-        display: flex;
-        justify-content: space-between;
-        align-items: flex-start;
-        margin-bottom: 1rem;
-    }
-    
-    .match-info h3 {
-        color: #2d3748;
-        font-size: 1.2rem;
-        font-weight: 700;
-        margin: 0 0 0.5rem 0;
-    }
-    
-    .league-time {
-        display: flex;
-        gap: 1rem;
-        flex-wrap: wrap;
-    }
-    
-    .league {
-        color: #667eea;
-        font-weight: 600;
-        font-size: 0.9rem;
-    }
-    
-    .time {
-        color: #718096;
-        font-weight: 500;
-        font-size: 0.9rem;
-    }
-    
-    .confidence-simple {
-        color: white;
-        font-weight: 800;
-        font-size: 1.2rem;
-        padding: 0.8rem 1.2rem;
-        border-radius: 12px;
-        text-align: center;
-        min-width: 70px;
-        box-shadow: inset 2px 2px 4px rgba(0,0,0,0.1);
-    }
-    
-    .prediction-info {
-        background: rgba(102, 126, 234, 0.02);
-        padding: 1rem;
-        border-radius: 12px;
-        box-shadow: inset 2px 2px 4px rgba(200, 208, 231, 0.3);
-    }
-    
-    .main-prediction {
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        margin-bottom: 1rem;
-        padding-bottom: 1rem;
-        border-bottom: 1px solid rgba(200, 208, 231, 0.3);
-    }
-    
-    .prediction-label {
-        color: #4a5568;
-        font-weight: 600;
-        font-size: 1rem;
-    }
-    
-    .prediction-value {
-        color: #2d3748;
-        font-weight: 700;
-        font-size: 1.1rem;
-    }
-    
-    .context-info {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-        gap: 0.8rem;
-    }
-    
-    .context-item {
-        display: flex;
-        flex-direction: column;
-        gap: 0.2rem;
-    }
-    
-    .context-label {
-        color: #718096;
-        font-size: 0.8rem;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.3px;
-    }
-    
-    .context-value {
-        color: #2d3748;
-        font-size: 0.95rem;
-        font-weight: 600;
-    }
-    
-    /* Lista de jogos simplificada */
-    .games-list-simple {
-        background: #e0e5ec;
-        border-radius: 16px;
-        padding: 1.5rem;
-        margin-top: 2rem;
-        box-shadow: 8px 8px 16px #c8d0e7, -8px -8px 16px #f8ffff;
-    }
-    
-    .games-list-simple h3 {
-        color: #667eea;
-        font-weight: 700;
-        margin-bottom: 1rem;
-        text-align: center;
-        font-size: 1.2rem;
-    }
-    
-    .game-item-simple {
-        background: #e0e5ec;
-        padding: 0.8rem 1rem;
-        border-radius: 10px;
-        margin-bottom: 0.6rem;
-        box-shadow: 3px 3px 6px #c8d0e7, -3px -3px 6px #f8ffff;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        transition: all 0.2s ease;
-    }
-    
-    .game-item-simple:hover {
-        box-shadow: inset 3px 3px 6px #c8d0e7, inset -3px -3px 6px #f8ffff;
-    }
-    
-    .game-teams-simple {
-        font-weight: 600;
-        color: #2d3748;
-        font-size: 0.9rem;
-    }
-    
-    .game-confidence-simple {
-        background: #667eea;
-        color: white;
-        padding: 0.3rem 0.6rem;
-        border-radius: 8px;
-        font-weight: 700;
-        font-size: 0.85rem;
-    }
-    
-    /* Sidebar neumorphism */
-    .css-1d391kg {
-        background: #e0e5ec;
-        box-shadow: inset 3px 3px 6px #c8d0e7, inset -3px -3px 6px #f8ffff;
-        border-right: none;
-    }
-    
-    /* Botões neumorphism */
-    .stButton > button {
-        background: #e0e5ec;
-        color: #667eea;
-        border: none;
-        border-radius: 15px;
-        padding: 0.75rem 2rem;
-        font-weight: 700;
-        box-shadow: 6px 6px 12px #c8d0e7, -6px -6px 12px #f8ffff;
-        transition: all 0.3s ease;
-        font-family: 'Inter', sans-serif;
-    }
-    
-    .stButton > button:hover {
-        box-shadow: inset 6px 6px 12px #c8d0e7, inset -6px -6px 12px #f8ffff;
-        transform: scale(0.98);
-        color: #5a6fd8;
-    }
-    
-    /* Tabs neumorphism */
-    .stTabs [data-baseweb="tab-list"] {
-        background: #e0e5ec;
-        border-radius: 15px;
-        box-shadow: inset 3px 3px 6px #c8d0e7, inset -3px -3px 6px #f8ffff;
-        border: none;
-    }
-    
-    .stTabs [data-baseweb="tab"] {
-        background: transparent;
-        color: #2d3748;
-        border-radius: 10px;
-        transition: all 0.3s ease;
-        font-weight: 600;
-    }
-    
-    .stTabs [aria-selected="true"] {
-        background: #e0e5ec;
-        box-shadow: 3px 3px 6px #c8d0e7, -3px -3px 6px #f8ffff;
-        color: #667eea;
-    }
-    
-    /* Cards de liga */
-    .league-card {
-        background: #e0e5ec;
-        padding: 1.5rem;
-        border-radius: 15px;
-        margin: 1rem 0;
-        box-shadow: 6px 6px 12px #c8d0e7, -6px -6px 12px #f8ffff;
-        border: none;
-        transition: all 0.3s ease;
-    }
-    
-    .league-card:hover {
-        box-shadow: inset 6px 6px 12px #c8d0e7, inset -6px -6px 12px #f8ffff;
-    }
-    
-    .league-card h4 {
-        color: #667eea;
-        font-weight: 700;
-        margin-bottom: 0.5rem;
-    }
-    
-    /* Classes de precisão */
-    .accuracy-high {
-        color: #38ef7d;
-        font-weight: 800;
-        text-shadow: 1px 1px 2px rgba(56, 239, 125, 0.2);
-    }
-    
-    .accuracy-medium {
-        color: #f093fb;
-        font-weight: 800;
-        text-shadow: 1px 1px 2px rgba(240, 147, 251, 0.2);
-    }
-    
-    .accuracy-low {
-        color: #ff6b6b;
-        font-weight: 800;
-        text-shadow: 1px 1px 2px rgba(255, 107, 107, 0.2);
-    }
-    
-    /* Status de conexão */
-    .connection-status {
-        background: #e0e5ec;
-        padding: 0.5rem 1rem;
-        border-radius: 10px;
-        margin: 0.5rem 0;
-        box-shadow: inset 2px 2px 4px #c8d0e7, inset -2px -2px 4px #f8ffff;
-        font-size: 0.85rem;
-    }
-    
-    /* Responsividade */
-    @media (max-width: 768px) {
-        .main-header {
-            padding: 2rem 1rem;
-            border-radius: 15px;
-        }
-        
-        .main-header h1 {
-            font-size: 2rem;
-        }
-        
-        .metric-card, .prediction-card-simple {
-            border-radius: 15px;
-            padding: 1.5rem;
-        }
-        
-        .card-header {
-            flex-direction: column;
-            gap: 1rem;
-            text-align: center;
-        }
-        
-        .league-time {
-            justify-content: center;
-        }
-        
-        .context-info {
-            grid-template-columns: 1fr;
-        }
-        
-        .game-item-simple {
-            flex-direction: column;
-            gap: 0.5rem;
-            text-align: center;
-        }
-    }
-</style>
-""", unsafe_allow_html=True)
-
 def get_api_headers():
     """Retorna os headers corretos para API-SPORTS"""
     return {
@@ -1210,7 +805,7 @@ def get_prediction_context(pred, league_context):
             return "🤔 Under com reservas"
 
 def display_prediction_card_clean(pred, index):
-    """Exibe card de previsão no estilo simples e limpo"""
+    """Exibe card de previsão usando componentes nativos do Streamlit"""
     try:
         utc_time = datetime.strptime(pred['kickoff'][:16], '%Y-%m-%dT%H:%M')
         hora_portugal = utc_time.strftime('%H:%M')
@@ -1219,73 +814,95 @@ def display_prediction_card_clean(pred, index):
     
     league_context = get_league_context(pred['league'])
     
+    # Determinar cor da confiança
     if pred['confidence'] > 80:
-        confidence_color = "#38ef7d"
+        confidence_color = "🟢"
+        confidence_label = "Alta"
     elif pred['confidence'] > 65:
-        confidence_color = "#667eea"
+        confidence_color = "🔵"
+        confidence_label = "Boa"
     else:
-        confidence_color = "#f093fb"
+        confidence_color = "🟡"
+        confidence_label = "Média"
     
     prediction_context = get_prediction_context(pred, league_context)
     
     diff = pred['confidence'] - league_context['league_avg']
     diff_text = f"+{diff:.0f}%" if diff > 0 else f"{diff:.0f}%"
-    diff_color = "#38ef7d" if diff > 5 else "#f093fb" if diff < -5 else "#667eea"
     
-    # Criar o HTML do card
-    html_content = f"""
-    <div class="prediction-card-simple">
-        <div class="card-header">
-            <div class="match-info">
-                <h3>⚽ {pred['home_team']} vs {pred['away_team']}</h3>
-                <div class="league-time">
-                    <span class="league">🏆 {pred['league']} ({pred['country']})</span>
-                    <span class="time">🕐 {hora_portugal}</span>
-                </div>
-            </div>
-            <div class="confidence-simple" style="background-color: {confidence_color};">
-                {pred['confidence']:.0f}%
-            </div>
-        </div>
-        
-        <div class="prediction-info">
-            <div class="main-prediction">
-                <span class="prediction-label">🎯 Previsão ML:</span>
-                <span class="prediction-value">{pred['prediction']}</span>
-            </div>
+    # Usar container e colunas do Streamlit
+    with st.container():
+        # Criar um expander estilizado para cada previsão
+        with st.expander(f"⚽ **{pred['home_team']} vs {pred['away_team']}** - {confidence_color} {pred['confidence']:.0f}%", expanded=True):
             
-            <div class="context-info">
-                <div class="context-item">
-                    <span class="context-label">📊 Liga (média)</span>
-                    <span class="context-value">{league_context['league_avg']:.0f}%</span>
-                </div>
-                <div class="context-item">
-                    <span class="context-label">📈 Vs Liga</span>
-                    <span class="context-value" style="color: {diff_color};">
-                        {diff_text}
-                    </span>
-                </div>
-                <div class="context-item">
-                    <span class="context-label">💡 Análise</span>
-                    <span class="context-value">{prediction_context}</span>
-                </div>
-            </div>
-        </div>
-    </div>
-    """
-    
-    # IMPORTANTE: Usar st.markdown com unsafe_allow_html=True
-    st.markdown(html_content, unsafe_allow_html=True)
+            # Informações do jogo
+            col1, col2 = st.columns([2, 1])
+            
+            with col1:
+                st.write(f"🏆 **Liga:** {pred['league']} ({pred['country']})")
+                st.write(f"🕐 **Horário:** {hora_portugal}")
+            
+            with col2:
+                st.metric(
+                    label="Confiança",
+                    value=f"{pred['confidence']:.0f}%",
+                    delta=confidence_label
+                )
+            
+            st.divider()
+            
+            # Previsão principal
+            st.write(f"### 🎯 Previsão ML: **{pred['prediction']}**")
+            
+            # Contexto em colunas
+            col1, col2, col3 = st.columns(3)
+            
+            with col1:
+                st.metric(
+                    label="📊 Liga (média)",
+                    value=f"{league_context['league_avg']:.0f}%"
+                )
+            
+            with col2:
+                st.metric(
+                    label="📈 Vs Liga",
+                    value=diff_text,
+                    delta=None
+                )
+            
+            with col3:
+                st.write("**💡 Análise**")
+                st.write(prediction_context)
+            
+            # Features avançadas (se disponíveis)
+            if 'advanced_features' in pred:
+                st.divider()
+                st.write("**🧠 Features Avançadas:**")
+                
+                adv = pred['advanced_features']
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    consistency = (adv.get('home_consistency', 0.5) + adv.get('away_consistency', 0.5)) / 2
+                    st.metric("Consistência", f"{consistency:.2f}")
+                
+                with col2:
+                    momentum = (adv.get('home_momentum', 0) + adv.get('away_momentum', 0)) / 2
+                    st.metric("Momentum", f"{momentum:.1%}")
+                
+                with col3:
+                    combined = adv.get('combined_score', 0)
+                    st.metric("Score Combinado", f"{combined:.2f}")
 
 def display_all_games_list_simple(predictions):
-    """Exibe lista simplificada de todos os jogos"""
+    """Exibe lista de todos os jogos usando componentes nativos"""
     if not predictions:
         return
     
-    html_content = """
-    <div class="games-list-simple">
-        <h3>📋 Todos os Jogos do Dia</h3>
-    """
+    st.markdown("### 📋 Todos os Jogos do Dia")
+    
+    # Criar DataFrame para exibição
+    games_data = []
     
     for pred in predictions:
         try:
@@ -1296,21 +913,27 @@ def display_all_games_list_simple(predictions):
         
         prediction_icon = "🟢" if pred['prediction'] == 'OVER 0.5' else "🔴"
         
-        html_content += f"""
-        <div class="game-item-simple">
-            <div class="game-teams-simple">
-                {prediction_icon} {pred['home_team']} vs {pred['away_team']} ({hora})
-            </div>
-            <div class="game-confidence-simple">
-                {pred['confidence']:.0f}%
-            </div>
-        </div>
-        """
+        games_data.append({
+            'Hora': hora,
+            'Jogo': f"{pred['home_team']} vs {pred['away_team']}",
+            'Liga': pred['league'],
+            'Previsão': f"{prediction_icon} {pred['prediction']}",
+            'Confiança': f"{pred['confidence']:.0f}%"
+        })
     
-    html_content += "</div>"
-    
-    # IMPORTANTE: Usar st.markdown com unsafe_allow_html=True
-    st.markdown(html_content, unsafe_allow_html=True)
+    # Exibir como tabela
+    df_games = pd.DataFrame(games_data)
+    st.dataframe(
+        df_games,
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "Confiança": st.column_config.TextColumn(
+                "Confiança",
+                help="Confiança da previsão"
+            ),
+        }
+    )
 
 def predict_matches(fixtures, model_data):
     """Faz previsões para os jogos do dia usando features avançadas"""
@@ -1489,12 +1112,8 @@ def analyze_leagues(df):
     return league_analysis
 
 def main():
-    st.markdown("""
-    <div class="main-header">
-        <h1>⚽ HT Goals AI Engine</h1>
-        <p>🚀 Powered by Predictive Modeling & Advanced Metrics</p>
-    </div>
-    """, unsafe_allow_html=True)
+    st.title("⚽ HT Goals AI Engine")
+    st.markdown("🚀 Powered by Predictive Modeling & Advanced Metrics")
     
     # Teste de conectividade inicial
     conn_ok, conn_msg = test_api_connection()
@@ -1507,15 +1126,15 @@ def main():
             api_ok, requests_left, api_status = check_api_status()
             
             if not api_ok:
-                st.markdown(f'<div class="connection-status" style="color: #dc3545;">❌ {api_status}</div>', unsafe_allow_html=True)
+                st.error(f"❌ {api_status}")
             else:
-                st.markdown(f'<div class="connection-status" style="color: #28a745;">✅ API conectada</div>', unsafe_allow_html=True)
+                st.success("✅ API conectada")
                 if requests_left > 0:
                     st.info(f"📊 Requests restantes hoje: {requests_left}")
                 else:
                     st.warning(f"⚠️ Sem requests restantes hoje!")
         else:
-            st.markdown(f'<div class="connection-status" style="color: #dc3545;">❌ {conn_msg}</div>', unsafe_allow_html=True)
+            st.error(f"❌ {conn_msg}")
         
         selected_date = st.date_input(
             "📅 Data para análise:",
@@ -1528,7 +1147,7 @@ def main():
             "📊 Dias para treinamento:",
             min_value=15,
             max_value=730,
-            value=150  # Valor padrão menor para evitar erros
+            value=150
         )
         
         use_cache = st.checkbox(
@@ -1629,36 +1248,16 @@ def main():
                     avg_confidence = sum([p['confidence'] for p in predictions]) / len(predictions)
                     
                     with col1:
-                        st.markdown(f"""
-                        <div class="metric-card">
-                            <h3>🎮 Total de Jogos</h3>
-                            <h1>{total_games}</h1>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        st.metric("🎮 Total de Jogos", total_games)
                     
                     with col2:
-                        st.markdown(f"""
-                        <div class="metric-card">
-                            <h3>🎯 Alta Confiança</h3>
-                            <h1>{high_confidence}</h1>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        st.metric("🎯 Alta Confiança", high_confidence)
                     
                     with col3:
-                        st.markdown(f"""
-                        <div class="metric-card">
-                            <h3>📈 Over 0.5</h3>
-                            <h1>{over_predictions}</h1>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        st.metric("📈 Over 0.5", over_predictions)
                     
                     with col4:
-                        st.markdown(f"""
-                        <div class="metric-card">
-                            <h3>💯 Confiança Média</h3>
-                            <h1>{avg_confidence:.1f}%</h1>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        st.metric("💯 Confiança Média", f"{avg_confidence:.1f}%")
                     
                     st.subheader("🏆 Melhores Apostas (Análise Avançada)")
                     
@@ -1698,28 +1297,20 @@ def main():
                 with col1:
                     st.subheader("🔥 Ligas OVER (> 50%)")
                     for league, stats in sorted(over_leagues.items(), key=lambda x: x[1]['over_rate'], reverse=True):
-                        st.markdown(f"""
-                        <div class="league-card">
-                            <h4>{league}</h4>
-                            <p>{stats['classification']}</p>
-                            <p>📊 Taxa Over: {stats['over_rate']:.1%}</p>
-                            <p>⚽ Média gols HT: {stats['avg_goals_ht']:.2f}</p>
-                            <p>🎮 Jogos analisados: {stats['total_games']}</p>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        with st.expander(f"{league} - {stats['over_rate']:.1%}"):
+                            st.write(f"**{stats['classification']}**")
+                            st.write(f"📊 Taxa Over: {stats['over_rate']:.1%}")
+                            st.write(f"⚽ Média gols HT: {stats['avg_goals_ht']:.2f}")
+                            st.write(f"🎮 Jogos analisados: {stats['total_games']}")
                 
                 with col2:
                     st.subheader("❄️ Ligas UNDER (< 50%)")
                     for league, stats in sorted(under_leagues.items(), key=lambda x: x[1]['over_rate']):
-                        st.markdown(f"""
-                        <div class="league-card">
-                            <h4>{league}</h4>
-                            <p>{stats['classification']}</p>
-                            <p>📊 Taxa Over: {stats['over_rate']:.1%}</p>
-                            <p>⚽ Média gols HT: {stats['avg_goals_ht']:.2f}</p>
-                            <p>🎮 Jogos analisados: {stats['total_games']}</p>
-                        </div>
-                        """, unsafe_allow_html=True)
+                        with st.expander(f"{league} - {stats['over_rate']:.1%}"):
+                            st.write(f"**{stats['classification']}**")
+                            st.write(f"📊 Taxa Over: {stats['over_rate']:.1%}")
+                            st.write(f"⚽ Média gols HT: {stats['avg_goals_ht']:.2f}")
+                            st.write(f"🎮 Jogos analisados: {stats['total_games']}")
         else:
             st.info("🤖 Treine um modelo primeiro")
     
@@ -1834,39 +1425,19 @@ def main():
             
             with col1:
                 accuracy = best_metrics['test_accuracy'] * 100
-                st.markdown(f"""
-                <div class="metric-card">
-                    <h3>🎯 Acurácia</h3>
-                    <h1 class="{'accuracy-high' if accuracy > 65 else 'accuracy-medium'}">{accuracy:.1f}%</h1>
-                </div>
-                """, unsafe_allow_html=True)
+                st.metric("🎯 Acurácia", f"{accuracy:.1f}%")
             
             with col2:
                 precision = best_metrics['precision'] * 100
-                st.markdown(f"""
-                <div class="metric-card">
-                    <h3>💎 Precisão</h3>
-                    <h1 class="{'accuracy-high' if precision > 65 else 'accuracy-medium'}">{precision:.1f}%</h1>
-                </div>
-                """, unsafe_allow_html=True)
+                st.metric("💎 Precisão", f"{precision:.1f}%")
             
             with col3:
                 recall = best_metrics['recall'] * 100
-                st.markdown(f"""
-                <div class="metric-card">
-                    <h3>📊 Recall</h3>
-                    <h1 class="{'accuracy-high' if recall > 65 else 'accuracy-medium'}">{recall:.1f}%</h1>
-                </div>
-                """, unsafe_allow_html=True)
+                st.metric("📊 Recall", f"{recall:.1f}%")
             
             with col4:
                 f1 = best_metrics['f1_score'] * 100
-                st.markdown(f"""
-                <div class="metric-card">
-                    <h3>🏅 F1-Score</h3>
-                    <h1 class="{'accuracy-high' if f1 > 65 else 'accuracy-medium'}">{f1:.1f}%</h1>
-                </div>
-                """, unsafe_allow_html=True)
+                st.metric("🏅 F1-Score", f"{f1:.1f}%")
             
             st.subheader("📊 Performance Histórica do Modelo")
             
@@ -1878,28 +1449,13 @@ def main():
                 col1, col2, col3 = st.columns(3)
                 
                 with col1:
-                    st.markdown(f"""
-                    <div class="metric-card">
-                        <h3>📅 Jogos Analisados</h3>
-                        <h1>{total_analyzed:,}</h1>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    st.metric("📅 Jogos Analisados", f"{total_analyzed:,}")
                 
                 with col2:
-                    st.markdown(f"""
-                    <div class="metric-card">
-                        <h3>✅ Acertos</h3>
-                        <h1>{correct_predictions:,}</h1>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    st.metric("✅ Acertos", f"{correct_predictions:,}")
                 
                 with col3:
-                    st.markdown(f"""
-                    <div class="metric-card">
-                        <h3>📈 Taxa de Acerto</h3>
-                        <h1>{accuracy_rate:.1f}%</h1>
-                    </div>
-                    """, unsafe_allow_html=True)
+                    st.metric("📈 Taxa de Acerto", f"{accuracy_rate:.1f}%")
             
             if model_data.get('advanced_features', False):
                 st.subheader("🧠 Análise de Features Avançadas")
