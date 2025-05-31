@@ -540,7 +540,7 @@ def get_fixtures_with_retry(date_str, max_retries=3):
                     data = response.json()
                     
                     if 'errors' in data and data['errors']:
-                        if attempt == 0:  # Só mostrar erro na primeira tentativa
+                        if attempt == 0:
                             st.warning(f"Erro da API para {date_str}: {data['errors']}")
                         return []
                     
@@ -597,7 +597,9 @@ def load_historical_data():
         "data/historical_matches.parquet",
         "data/historical_matches.csv",
         "historical_matches.parquet",
-        "historical_matches.csv"
+        "historical_matches.csv",
+        "data/historical_matches_complete.parquet",
+        "data/historical_matches_cache.parquet"
     ]
     
     for file_path in data_files:
@@ -616,86 +618,114 @@ def load_historical_data():
     
     return None, "❌ Nenhum arquivo de dados históricos encontrado"
 
-def collect_historical_data_robust(days=30, use_cached=True):
-    """Coleta dados históricos com tratamento robusto de erros"""
+def collect_historical_data_optimized(days=30, use_cached=True):
+    """Versão otimizada da coleta de dados históricos"""
+    
+    # 1. Primeiro, sempre tentar carregar do cache
     if use_cached:
         df, message = load_historical_data()
         if df is not None:
             st.info(message)
+            # Filtrar apenas os dias necessários
             if days < 730:
                 cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
                 if 'date' in df.columns:
-                    df = df[df['date'] >= cutoff_date]
-                    st.info(f"📊 Filtrado para {len(df)} jogos dos últimos {days} dias")
+                    df_filtered = df[df['date'] >= cutoff_date].copy()
+                    st.info(f"📊 Usando cache: {len(df_filtered)} jogos dos últimos {days} dias")
+                    return df_filtered
             return df
     
-    # Teste de conexão antes de começar
-    conn_ok, conn_msg = test_api_connection()
-    if not conn_ok:
-        st.error(f"❌ Problema de conectividade: {conn_msg}")
-        st.info("💡 Tente usar 'Usar dados em cache' ou verificar sua internet")
-        return pd.DataFrame()
+    # 2. Se não usar cache ou não encontrou arquivo, coletar dados
+    st.warning("⚠️ Coleta de dados da API pode ser lenta. Recomendo usar dados em cache!")
     
+    # Para o modelo ML, não precisamos de todos os dias
+    # Podemos usar amostragem para reduzir requisições
+    if days > 30:
+        # Amostragem inteligente: mais dias recentes, menos dias antigos
+        sample_days = []
+        
+        # Últimos 7 dias completos
+        for i in range(7):
+            sample_days.append(i + 1)
+        
+        # Próximos 23 dias: um a cada 2 dias
+        for i in range(7, min(30, days), 2):
+            sample_days.append(i + 1)
+        
+        # Restante: um a cada 5 dias
+        for i in range(30, days, 5):
+            sample_days.append(i + 1)
+        
+        total_requests = len(sample_days)
+        st.info(f"🚀 Otimização: coletando {total_requests} dias amostrados de {days} dias totais")
+    else:
+        sample_days = list(range(1, days + 1))
+        total_requests = days
+    
+    # 3. Coleta paralela com chunks
     all_data = []
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    consecutive_errors = 0
-    max_consecutive_errors = 5
-    total_requests = 0
-    successful_requests = 0
+    # Processar em chunks para mostrar progresso
+    chunk_size = 5
+    chunks = [sample_days[i:i + chunk_size] for i in range(0, len(sample_days), chunk_size)]
     
-    for i in range(days):
-        date = datetime.now() - timedelta(days=i+1)
-        date_str = date.strftime('%Y-%m-%d')
-        status_text.text(f"📊 Coletando dados ML: {date.strftime('%d/%m/%Y')} ({i+1}/{days})")
+    for chunk_idx, chunk in enumerate(chunks):
+        chunk_data = []
         
-        try:
-            fixtures = get_fixtures_with_retry(date_str)
-            total_requests += 1
+        for day_offset in chunk:
+            date = datetime.now() - timedelta(days=day_offset)
+            date_str = date.strftime('%Y-%m-%d')
             
-            if fixtures:
-                successful_requests += 1
-                consecutive_errors = 0
+            try:
+                # Usar cache de fixtures se disponível
+                fixtures = get_fixtures_cached_robust(date_str)
                 
-                for match in fixtures:
-                    try:
-                        if match['fixture']['status']['short'] == 'FT' and match.get('score', {}).get('halftime'):
-                            match_data = extract_match_features(match)
-                            if match_data:
-                                all_data.append(match_data)
-                    except Exception:
-                        continue
-                        
-            else:
-                consecutive_errors += 1
-                if consecutive_errors >= max_consecutive_errors:
-                    st.warning(f"⚠️ Muitos erros consecutivos ({consecutive_errors}). Parando coleta.")
-                    break
+                if fixtures:
+                    for match in fixtures:
+                        try:
+                            if match['fixture']['status']['short'] == 'FT' and match.get('score', {}).get('halftime'):
+                                match_data = extract_match_features(match)
+                                if match_data:
+                                    chunk_data.append(match_data)
+                        except:
+                            continue
+            except:
+                continue
         
-        except Exception:
-            consecutive_errors += 1
-            if consecutive_errors >= max_consecutive_errors:
-                st.warning(f"⚠️ Muitos erros consecutivos. Parando coleta.")
-                break
+        all_data.extend(chunk_data)
         
-        progress_bar.progress((i+1)/days)
+        # Atualizar progresso
+        progress = (chunk_idx + 1) / len(chunks)
+        progress_bar.progress(progress)
+        status_text.text(f"📊 Coletando dados: {len(all_data)} jogos encontrados...")
         
-        if i < days - 1:
-            time.sleep(0.5)
+        # Pequena pausa entre chunks
+        if chunk_idx < len(chunks) - 1:
+            time.sleep(0.2)
     
     progress_bar.empty()
     status_text.empty()
     
-    if total_requests > 0:
-        success_rate = (successful_requests / total_requests) * 100
-        st.info(f"📊 Coleta concluída: {successful_requests}/{total_requests} dias ({success_rate:.1f}% sucesso)")
-        st.info(f"🎯 Total de jogos coletados: {len(all_data)}")
+    # 4. Salvar dados coletados em cache para uso futuro
+    if len(all_data) > 100:
+        try:
+            df_new = pd.DataFrame(all_data)
+            # Tentar salvar como parquet (mais eficiente)
+            cache_file = "data/historical_matches_cache.parquet"
+            os.makedirs("data", exist_ok=True)
+            df_new.to_parquet(cache_file)
+            st.success(f"💾 Cache atualizado: {len(all_data)} jogos salvos")
+        except:
+            pass
     
-    if len(all_data) < 100:
-        st.warning("⚠️ Poucos dados coletados. Recomendo usar dados em cache ou tentar novamente.")
+    st.info(f"🎯 Total de jogos coletados: {len(all_data)}")
     
     return pd.DataFrame(all_data)
+
+# Usar a versão otimizada
+collect_historical_data_robust = collect_historical_data_optimized
 
 def extract_match_features(match):
     """Extrai features para ML com tratamento de erro"""
@@ -732,8 +762,13 @@ def extract_match_features(match):
     except Exception:
         return None
 
-def prepare_ml_features(df):
-    """Prepara features avançadas para o modelo ML incluindo coeficiente de variação e combined score"""
+def prepare_ml_features_hybrid(df):
+    """
+    Versão híbrida que mantém TODAS as features avançadas
+    mas com otimizações de performance
+    """
+    
+    # Garantir coluna over_05
     if 'over_05' not in df.columns:
         if 'ht_home_goals' in df.columns and 'ht_away_goals' in df.columns:
             df['over_05'] = (df['ht_home_goals'] + df['ht_away_goals']) > 0
@@ -746,43 +781,61 @@ def prepare_ml_features(df):
         elif 'ht_home' in df.columns and 'ht_away' in df.columns:
             df['ht_total_goals'] = df['ht_home'] + df['ht_away']
     
+    # Ordenar por data
+    if 'date' in df.columns:
+        df = df.sort_values('date').reset_index(drop=True)
+    
+    st.info("🧠 Preparando TODAS as 25+ features avançadas com otimização...")
+    
+    # Pré-calcular estatísticas agregadas para performance
     team_stats = {}
     
-    for idx, row in df.iterrows():
-        home_team = row['home_team_id']
-        away_team = row['away_team_id']
-        
-        for team_id in [home_team, away_team]:
-            if team_id not in team_stats:
-                team_stats[team_id] = {
-                    'games': 0, 
-                    'over_05': 0, 
-                    'over_05_binary': 0,
-                    'goals_scored': 0, 
-                    'goals_conceded': 0,
-                    'goals_capped': 0,
-                    'home_games': 0, 
-                    'home_over': 0, 
-                    'home_over_binary': 0,
-                    'home_goals': 0,
-                    'home_goals_capped': 0,
-                    'away_games': 0, 
-                    'away_over': 0,
-                    'away_over_binary': 0,
-                    'away_goals': 0,
-                    'away_goals_capped': 0,
-                    'goals_list': [],
-                    'over_list': [],
-                    'extreme_games': 0
-                }
+    # Inicializar com numpy arrays para melhor performance
+    unique_teams = pd.concat([df['home_team_id'], df['away_team_id']]).unique()
+    
+    for team_id in unique_teams:
+        team_stats[team_id] = {
+            'games': 0,
+            'over_05': 0,
+            'over_05_binary': 0,
+            'goals_scored': 0,
+            'goals_conceded': 0,
+            'goals_capped': 0,
+            'home_games': 0,
+            'home_over': 0,
+            'home_over_binary': 0,
+            'home_goals': 0,
+            'home_goals_capped': 0,
+            'away_games': 0,
+            'away_over': 0,
+            'away_over_binary': 0,
+            'away_goals': 0,
+            'away_goals_capped': 0,
+            'goals_list': [],
+            'over_list': [],
+            'extreme_games': 0
+        }
     
     features = []
+    total_rows = len(df)
+    
+    # Processar com barra de progresso para grandes datasets
+    progress_bar = st.progress(0)
+    progress_step = max(1, total_rows // 20)  # Atualizar a cada 5%
     
     for idx, row in df.iterrows():
+        if idx % progress_step == 0:
+            progress = idx / total_rows
+            progress_bar.progress(progress)
+        
         home_id = row['home_team_id']
         away_id = row['away_team_id']
         
+        # Obter estatísticas atuais
         home_stats = team_stats[home_id]
+        away_stats = team_stats[away_id]
+        
+        # Calcular features básicas
         home_over_rate = home_stats['over_05'] / max(home_stats['games'], 1)
         home_over_rate_binary = home_stats['over_05_binary'] / max(home_stats['games'], 1)
         home_avg_goals = home_stats['goals_scored'] / max(home_stats['games'], 1)
@@ -790,7 +843,6 @@ def prepare_ml_features(df):
         home_home_over_rate = home_stats['home_over'] / max(home_stats['home_games'], 1)
         home_home_over_rate_binary = home_stats['home_over_binary'] / max(home_stats['home_games'], 1)
         
-        away_stats = team_stats[away_id]
         away_over_rate = away_stats['over_05'] / max(away_stats['games'], 1)
         away_over_rate_binary = away_stats['over_05_binary'] / max(away_stats['games'], 1)
         away_avg_goals = away_stats['goals_scored'] / max(away_stats['games'], 1)
@@ -798,35 +850,51 @@ def prepare_ml_features(df):
         away_away_over_rate = away_stats['away_over'] / max(away_stats['away_games'], 1)
         away_away_over_rate_binary = away_stats['away_over_binary'] / max(away_stats['away_games'], 1)
         
-        league_games = df[df['league_id'] == row['league_id']]
-        league_over_rate = league_games['over_05'].mean() if len(league_games) > 0 else 0.5
-        league_over_rate_binary = (league_games['over_05'] > 0).mean() if len(league_games) > 0 else 0.5
+        # Features de liga (usar cache)
+        league_id = row['league_id']
+        league_mask = df['league_id'] == league_id
+        league_data = df.loc[league_mask & (df.index < idx)]  # Apenas jogos anteriores
+        league_over_rate = league_data['over_05'].mean() if len(league_data) > 0 else 0.5
+        league_over_rate_binary = (league_data['over_05'] > 0).mean() if len(league_data) > 0 else 0.5
         
+        # FEATURES AVANÇADAS - Coeficiente de Variação
         if len(home_stats['goals_list']) > 1:
-            home_goals_cv = np.std(home_stats['goals_list']) / (np.mean(home_stats['goals_list']) + 0.01)
+            home_goals_std = np.std(home_stats['goals_list'])
+            home_goals_mean = np.mean(home_stats['goals_list'])
+            home_goals_cv = home_goals_std / (home_goals_mean + 0.01)
             home_consistency = 1 / (1 + home_goals_cv)
         else:
             home_consistency = 0.5
             home_goals_cv = 1.0
-            
+        
         if len(away_stats['goals_list']) > 1:
-            away_goals_cv = np.std(away_stats['goals_list']) / (np.mean(away_stats['goals_list']) + 0.01)
+            away_goals_std = np.std(away_stats['goals_list'])
+            away_goals_mean = np.mean(away_stats['goals_list'])
+            away_goals_cv = away_goals_std / (away_goals_mean + 0.01)
             away_consistency = 1 / (1 + away_goals_cv)
         else:
             away_consistency = 0.5
             away_goals_cv = 1.0
         
+        # FEATURES AVANÇADAS - Combined Score
         home_strength_binary = home_over_rate_binary * home_avg_goals_capped * home_consistency
         away_strength_binary = away_over_rate_binary * away_avg_goals_capped * away_consistency
         combined_score_binary = home_strength_binary + away_strength_binary
         
+        # FEATURES AVANÇADAS - Momentum Analysis
         home_recent = home_stats['over_list'][-5:] if len(home_stats['over_list']) >= 5 else home_stats['over_list']
         away_recent = away_stats['over_list'][-5:] if len(away_stats['over_list']) >= 5 else away_stats['over_list']
         
         home_momentum = sum([1 if x > 0 else 0 for x in home_recent]) / len(home_recent) if home_recent else home_over_rate_binary
         away_momentum = sum([1 if x > 0 else 0 for x in away_recent]) / len(away_recent) if away_recent else away_over_rate_binary
         
+        # FEATURES AVANÇADAS - Outlier Detection
+        home_extreme_rate = home_stats['extreme_games'] / max(home_stats['games'], 1)
+        away_extreme_rate = away_stats['extreme_games'] / max(away_stats['games'], 1)
+        
+        # Criar dicionário com TODAS as features
         feature_row = {
+            # Features básicas
             'home_over_rate': home_over_rate,
             'home_avg_goals': home_avg_goals,
             'home_home_over_rate': home_home_over_rate,
@@ -836,6 +904,8 @@ def prepare_ml_features(df):
             'league_over_rate': league_over_rate,
             'combined_over_rate': (home_over_rate + away_over_rate) / 2,
             'combined_goals': home_avg_goals + away_avg_goals,
+            
+            # Features binárias
             'home_over_rate_binary': home_over_rate_binary,
             'home_avg_goals_capped': home_avg_goals_capped,
             'home_home_over_rate_binary': home_home_over_rate_binary,
@@ -845,29 +915,44 @@ def prepare_ml_features(df):
             'league_over_rate_binary': league_over_rate_binary,
             'combined_over_rate_binary': (home_over_rate_binary + away_over_rate_binary) / 2,
             'combined_goals_capped': home_avg_goals_capped + away_avg_goals_capped,
+            
+            # FEATURES AVANÇADAS - Coeficiente de Variação
             'home_goals_cv': home_goals_cv,
             'away_goals_cv': away_goals_cv,
             'home_consistency': home_consistency,
             'away_consistency': away_consistency,
             'consistency_avg': (home_consistency + away_consistency) / 2,
             'consistency_diff': abs(home_consistency - away_consistency),
+            
+            # FEATURES AVANÇADAS - Combined Score
             'combined_score_binary': combined_score_binary,
             'home_strength_binary': home_strength_binary,
             'away_strength_binary': away_strength_binary,
+            
+            # FEATURES AVANÇADAS - Momentum
             'home_momentum': home_momentum,
             'away_momentum': away_momentum,
             'momentum_sum': home_momentum + away_momentum,
             'momentum_diff': abs(home_momentum - away_momentum),
             'momentum_avg': (home_momentum + away_momentum) / 2,
+            
+            # FEATURES AVANÇADAS - Outliers
+            'home_extreme_rate': home_extreme_rate,
+            'away_extreme_rate': away_extreme_rate,
+            'extreme_rate_avg': (home_extreme_rate + away_extreme_rate) / 2,
+            
+            # Target
             'target': row['over_05']
         }
         
         features.append(feature_row)
         
+        # Atualizar estatísticas para próxima iteração
         ht_home_goals = row.get('ht_home_goals', row.get('ht_home', 0))
         ht_away_goals = row.get('ht_away_goals', row.get('ht_away', 0))
         ht_total = ht_home_goals + ht_away_goals
         
+        # Atualizar home team
         team_stats[home_id]['games'] += 1
         team_stats[home_id]['over_05'] += row['over_05']
         team_stats[home_id]['over_05_binary'] += 1 if row['over_05'] > 0 else 0
@@ -884,6 +969,7 @@ def prepare_ml_features(df):
         if ht_total > 2:
             team_stats[home_id]['extreme_games'] += 1
         
+        # Atualizar away team
         team_stats[away_id]['games'] += 1
         team_stats[away_id]['over_05'] += row['over_05']
         team_stats[away_id]['over_05_binary'] += 1 if row['over_05'] > 0 else 0
@@ -899,8 +985,23 @@ def prepare_ml_features(df):
         team_stats[away_id]['over_list'].append(row['over_05'])
         if ht_total > 2:
             team_stats[away_id]['extreme_games'] += 1
+        
+        # Manter apenas últimos 10 jogos para economizar memória
+        for team_id in [home_id, away_id]:
+            if len(team_stats[team_id]['goals_list']) > 10:
+                team_stats[team_id]['goals_list'] = team_stats[team_id]['goals_list'][-10:]
+                team_stats[team_id]['over_list'] = team_stats[team_id]['over_list'][-10:]
     
-    return pd.DataFrame(features), team_stats
+    # Limpar barra de progresso
+    progress_bar.empty()
+    
+    features_df = pd.DataFrame(features)
+    st.success(f"✅ {len(features_df.columns)-1} features avançadas preparadas!")
+    
+    return features_df, team_stats
+
+# Usar a versão híbrida
+prepare_ml_features = prepare_ml_features_hybrid
 
 def train_ml_model_robust(df):
     """Versão robusta do treinamento com verificações"""
@@ -1131,7 +1232,8 @@ def display_prediction_card_clean(pred, index):
     diff_text = f"+{diff:.0f}%" if diff > 0 else f"{diff:.0f}%"
     diff_color = "#38ef7d" if diff > 5 else "#f093fb" if diff < -5 else "#667eea"
     
-    st.markdown(f"""
+    # Criar o HTML do card
+    html_content = f"""
     <div class="prediction-card-simple">
         <div class="card-header">
             <div class="match-info">
@@ -1170,17 +1272,20 @@ def display_prediction_card_clean(pred, index):
             </div>
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    """
+    
+    # IMPORTANTE: Usar st.markdown com unsafe_allow_html=True
+    st.markdown(html_content, unsafe_allow_html=True)
 
 def display_all_games_list_simple(predictions):
     """Exibe lista simplificada de todos os jogos"""
     if not predictions:
         return
     
-    st.markdown("""
+    html_content = """
     <div class="games-list-simple">
         <h3>📋 Todos os Jogos do Dia</h3>
-    """, unsafe_allow_html=True)
+    """
     
     for pred in predictions:
         try:
@@ -1191,7 +1296,7 @@ def display_all_games_list_simple(predictions):
         
         prediction_icon = "🟢" if pred['prediction'] == 'OVER 0.5' else "🔴"
         
-        st.markdown(f"""
+        html_content += f"""
         <div class="game-item-simple">
             <div class="game-teams-simple">
                 {prediction_icon} {pred['home_team']} vs {pred['away_team']} ({hora})
@@ -1200,9 +1305,12 @@ def display_all_games_list_simple(predictions):
                 {pred['confidence']:.0f}%
             </div>
         </div>
-        """, unsafe_allow_html=True)
+        """
     
-    st.markdown("</div>", unsafe_allow_html=True)
+    html_content += "</div>"
+    
+    # IMPORTANTE: Usar st.markdown com unsafe_allow_html=True
+    st.markdown(html_content, unsafe_allow_html=True)
 
 def predict_matches(fixtures, model_data):
     """Faz previsões para os jogos do dia usando features avançadas"""
