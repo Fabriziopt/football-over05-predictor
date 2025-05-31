@@ -23,6 +23,8 @@ st.set_page_config(
 # Inicializar session state para o modelo
 if 'trained_model' not in st.session_state:
     st.session_state.trained_model = None
+if 'model_trained' not in st.session_state:
+    st.session_state.model_trained = False
 
 # Configuração da API Key
 # Primeiro tenta ler do Streamlit secrets (produção)
@@ -139,6 +141,11 @@ def check_api_status():
                 elif isinstance(data['errors'], dict):
                     error_msg = data['errors'].get('token', str(data['errors']))
                 else:
+                # Fazer previsões
+                with st.spinner("🤖 Aplicando Machine Learning..."):
+                    predictions = predict_matches(fixtures, model_data)
+                
+                if predictions:
                     error_msg = str(data['errors'])
                 return False, 0, error_msg
         else:
@@ -615,6 +622,7 @@ def train_ml_model(df):
     
     # Salvar no session state
     st.session_state.trained_model = model_data
+    st.session_state.model_trained = True
     
     # Tentar salvar em arquivo também
     try:
@@ -823,8 +831,8 @@ def main():
         )
         
         # Status do modelo
-        model_data = st.session_state.trained_model if 'trained_model' in st.session_state else load_latest_model()
-        if model_data:
+        if st.session_state.model_trained and st.session_state.trained_model:
+            model_data = st.session_state.trained_model
             st.success("✅ Modelo carregado")
             st.info(f"📅 Treinado em: {model_data['training_date']}")
             st.info(f"📊 Amostras: {model_data['total_samples']}")
@@ -836,7 +844,15 @@ def main():
                 st.info(f"🏆 Melhor modelo: {best_model[0]}")
                 st.info(f"📈 F1-Score: {best_model[1]['f1_score']:.1%}")
         else:
-            st.warning("⚠️ Nenhum modelo encontrado")
+            model_data = load_latest_model()
+            if model_data:
+                st.session_state.trained_model = model_data
+                st.session_state.model_trained = True
+                st.success("✅ Modelo carregado do arquivo")
+                st.info(f"📅 Treinado em: {model_data['training_date']}")
+                st.info(f"📊 Amostras: {model_data['total_samples']}")
+            else:
+                st.warning("⚠️ Nenhum modelo encontrado")
     
     # Tabs principais
     tab1, tab2, tab3, tab4 = st.tabs([
@@ -849,17 +865,177 @@ def main():
     with tab1:
         st.header(f"🎯 Previsões para {selected_date.strftime('%d/%m/%Y')}")
         
-        # Verificar se há modelo disponível - usar session_state primeiro
-        if 'trained_model' in st.session_state:
+        # Debug - verificar estado
+        st.write(f"Debug - Model trained: {st.session_state.get('model_trained', False)}")
+        st.write(f"Debug - Model exists: {st.session_state.get('trained_model', None) is not None}")
+        
+        # Verificar se há modelo disponível
+        model_data = None
+        
+        # Primeiro verifica session state
+        if st.session_state.get('model_trained', False) and st.session_state.get('trained_model'):
             model_data = st.session_state.trained_model
+            st.success("✅ Modelo carregado da sessão")
         else:
+            # Tenta carregar de arquivo
             model_data = load_latest_model()
             if model_data:
                 st.session_state.trained_model = model_data
+                st.session_state.model_trained = True
+                st.success("✅ Modelo carregado do arquivo")
         
         if not model_data:
             st.warning("⚠️ Treine um modelo primeiro na aba 'Treinar Modelo'")
+            
+            # Botão para forçar recarregar
+            if st.button("🔄 Tentar carregar modelo novamente"):
+                st.experimental_rerun()
         else:
+            # Mostrar informações do modelo
+            st.info(f"🤖 Modelo: {model_data.get('training_date', 'Unknown')}")
+            st.info(f"📊 Times no banco: {len(model_data.get('team_stats', {}))}")
+            
+            # Buscar jogos do dia
+            date_str = selected_date.strftime('%Y-%m-%d')
+            
+            with st.spinner("🔍 Buscando jogos do dia..."):
+                fixtures = get_fixtures_cached(date_str)
+                
+            # Debug - mostrar quantos jogos foram encontrados
+            st.write(f"Debug: {len(fixtures)} jogos encontrados para {date_str}")
+            
+            if not fixtures:
+                st.info("📅 Nenhum jogo encontrado para esta data")
+                
+                # Sugestões
+                st.info("""
+                💡 Sugestões:
+                1. Tente uma data diferente (hoje ou amanhã)
+                2. Verifique se é dia de jogos (normalmente quartas, sábados e domingos)
+                3. Alguns jogos podem ainda não estar disponíveis na API
+                """)
+                
+                # Mostrar botão para testar com data de hoje
+                if st.button("🔄 Buscar jogos de hoje"):
+                    today = datetime.now().date()
+                    today_str = today.strftime('%Y-%m-%d')
+                    fixtures_today = get_fixtures_cached(today_str)
+                    st.write(f"Jogos de hoje ({today_str}): {len(fixtures_today)} encontrados")
+            else:
+                # Fazer previsões
+                with st.spinner("🤖 Aplicando Machine Learning..."):
+                    predictions = predict_matches(fixtures, model_data)
+                
+                if predictions:
+                    # Métricas resumo
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    total_games = len(predictions)
+                    high_confidence = len([p for p in predictions if p['confidence'] > 70])
+                    over_predictions = len([p for p in predictions if p['prediction'] == 'OVER 0.5'])
+                    avg_confidence = sum([p['confidence'] for p in predictions]) / len(predictions)
+                    
+                    with col1:
+                        st.markdown("""
+                        <div class="metric-card">
+                            <h3>🎮 Total de Jogos</h3>
+                            <h1>{}</h1>
+                        </div>
+                        """.format(total_games), unsafe_allow_html=True)
+                    
+                    with col2:
+                        st.markdown("""
+                        <div class="metric-card">
+                            <h3>🎯 Alta Confiança</h3>
+                            <h1>{}</h1>
+                        </div>
+                        """.format(high_confidence), unsafe_allow_html=True)
+                    
+                    with col3:
+                        st.markdown("""
+                        <div class="metric-card">
+                            <h3>📈 Over 0.5</h3>
+                            <h1>{}</h1>
+                        </div>
+                        """.format(over_predictions), unsafe_allow_html=True)
+                    
+                    with col4:
+                        st.markdown("""
+                        <div class="metric-card">
+                            <h3>💯 Confiança Média</h3>
+                            <h1>{:.1f}%</h1>
+                        </div>
+                        """.format(avg_confidence), unsafe_allow_html=True)
+                    
+                    # Top previsões - ORDENADAS POR CONFIANÇA (MAIOR PARA MENOR)
+                    st.subheader("🏆 Melhores Apostas do Dia")
+                    
+                    # Filtrar apenas OVER 0.5 com alta confiança e ordenar
+                    best_bets = [p for p in predictions if p['prediction'] == 'OVER 0.5' and p['confidence'] > 65]
+                    best_bets.sort(key=lambda x: x['confidence'], reverse=True)  # Maior confiança primeiro
+                    
+                    if best_bets:
+                        for i, pred in enumerate(best_bets[:10]):
+                            # Converter horário UTC para Portugal (UTC+0 no inverno, UTC+1 no verão)
+                            try:
+                                # Parse do horário UTC
+                                utc_time = datetime.strptime(pred['kickoff'][:16], '%Y-%m-%dT%H:%M')
+                                # Adicionar 0 horas (Portugal no inverno) ou 1 hora (verão)
+                                # Por simplicidade, vamos usar UTC+0 (você pode ajustar conforme necessário)
+                                pt_time = utc_time  # Portugal está em UTC+0 no inverno
+                                hora_portugal = pt_time.strftime('%H:%M')
+                            except:
+                                hora_portugal = pred['kickoff'][11:16]
+                            
+                            confidence_class = "accuracy-high" if pred['confidence'] > 75 else "accuracy-medium"
+                            
+                            st.markdown(f"""
+                            <div class="prediction-card">
+                                <h3>⚽ {pred['home_team']} vs {pred['away_team']}</h3>
+                                <p><strong>🏆 Liga:</strong> {pred['league']} ({pred['country']})</p>
+                                <p><strong>🕐 Horário PT:</strong> {hora_portugal}</p>
+                                <hr style="opacity: 0.3;">
+                                <p><strong>🎯 Previsão ML:</strong> {pred['prediction']}</p>
+                                <p><strong>💯 Confiança:</strong> <span class="{confidence_class}">{pred['confidence']:.1f}%</span></p>
+                                <p><strong>📊 Probabilidades:</strong> Over {pred['probability_over']:.1f}% | Under {pred['probability_under']:.1f}%</p>
+                            </div>
+                            """, unsafe_allow_html=True)
+                    else:
+                        st.info("🤷 Nenhuma aposta OVER 0.5 com boa confiança encontrada hoje")
+                    
+                    # Todas as previsões
+                    with st.expander("📋 Ver Todas as Previsões"):
+                        # Filtrar apenas OVER 0.5 para a tabela também
+                        over_predictions = [p for p in predictions if p['prediction'] == 'OVER 0.5']
+                        
+                        pred_data = []
+                        for p in over_predictions:
+                            try:
+                                utc_time = datetime.strptime(p['kickoff'][:16], '%Y-%m-%dT%H:%M')
+                                hora_pt = utc_time.strftime('%H:%M')
+                            except:
+                                hora_pt = p['kickoff'][11:16]
+                            
+                            pred_data.append({
+                                'Hora PT': hora_pt,
+                                'Casa': p['home_team'],
+                                'Fora': p['away_team'],
+                                'Liga': p['league'],
+                                'Previsão': p['prediction'],
+                                'Confiança': f"{p['confidence']:.1f}%",
+                                '_confidence': p['confidence']  # Para ordenação
+                            })
+                        
+                        if pred_data:
+                            pred_df = pd.DataFrame(pred_data)
+                            # Ordenar por confiança (decrescente) e remover coluna auxiliar
+                            pred_df = pred_df.sort_values('_confidence', ascending=False).drop('_confidence', axis=1)
+                            st.dataframe(pred_df, use_container_width=True)
+                        else:
+                            st.info("Nenhuma previsão OVER 0.5 encontrada")
+                
+                else:
+                    st.info("🤷 Nenhuma previsão disponível (times sem dados históricos)")
             # Buscar jogos do dia
             date_str = selected_date.strftime('%Y-%m-%d')
             
