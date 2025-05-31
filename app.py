@@ -889,8 +889,17 @@ def main():
             
             # Botão para forçar recarregar
             if st.button("🔄 Tentar carregar modelo novamente"):
-                st.experimental_rerun()
+                st.rerun()
         else:
+            # Mostrar informações do modelo
+            st.info(f"🤖 Modelo: {model_data.get('training_date', 'Unknown')}")
+            st.info(f"📊 Times no banco: {len(model_data.get('team_stats', {}))}")
+            
+            # Buscar jogos do dia
+            date_str = selected_date.strftime('%Y-%m-%d')
+            
+            with st.spinner("🔍 Buscando jogos do dia..."):
+                fixtures = get_fixtures_cached(date_str)
             # Mostrar informações do modelo
             st.info(f"🤖 Modelo: {model_data.get('training_date', 'Unknown')}")
             st.info(f"📊 Times no banco: {len(model_data.get('team_stats', {}))}")
