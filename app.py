@@ -20,75 +20,92 @@ st.set_page_config(
     layout="wide"
 )
 
-# SUA API Key - API-Football oficial
-API_KEY = "2aad0db0e5b88b3a080bdc85461a919"
+# Configuração da API Key
+# Primeiro tenta ler do Streamlit secrets (produção)
+# Se não encontrar, usa a key diretamente (desenvolvimento local)
+try:
+    API_KEY = st.secrets["API_KEY"]
+except:
+    # ATENÇÃO: Em produção, sempre use st.secrets!
+    # Esta key aqui é apenas para desenvolvimento local
+    API_KEY = "474f15de5b22951077ccb71b8d75b85c"
 
-# Configuração automática do tipo de API
-API_TYPE = None  # Será detectado automaticamente
-
-def detect_api_type():
-    """Detecta automaticamente se é RapidAPI ou API-Football direta"""
-    global API_TYPE
-    
-    # Teste 1: RapidAPI
-    headers_rapid = {
-        'x-rapidapi-key': API_KEY,
-        'x-rapidapi-host': 'api-football-v1.p.rapidapi.com'
-    }
-    
-    try:
-        response = requests.get(
-            'https://api-football-v1.p.rapidapi.com/v3/status',
-            headers=headers_rapid,
-            timeout=5
-        )
-        if response.status_code == 200:
-            API_TYPE = 'rapidapi'
-            return 'rapidapi'
-    except:
-        pass
-    
-    # Teste 2: API-Football direta
-    headers_direct = {
-        'x-apisports-key': API_KEY
-    }
-    
-    try:
-        response = requests.get(
-            'https://v3.football.api-sports.io/status',
-            headers=headers_direct,
-            timeout=5
-        )
-        if response.status_code == 200:
-            API_TYPE = 'direct'
-            return 'direct'
-    except:
-        pass
-    
-    return None
+# URL base da API-SPORTS
+API_BASE_URL = "https://v3.football.api-sports.io"
 
 def get_api_headers():
-    """Retorna os headers corretos baseado no tipo de API"""
-    if API_TYPE == 'rapidapi':
-        return {
-            'x-rapidapi-key': API_KEY,
-            'x-rapidapi-host': 'api-football-v1.p.rapidapi.com'
-        }
-    else:
-        return {
-            'x-apisports-key': API_KEY
-        }
+    """Retorna os headers corretos para API-SPORTS"""
+    return {
+        'x-apisports-key': API_KEY
+    }
 
-def get_api_base_url():
-    """Retorna a URL base correta"""
-    if API_TYPE == 'rapidapi':
-        return 'https://api-football-v1.p.rapidapi.com/v3'
-    else:
-        return 'https://v3.football.api-sports.io'
+def check_api_status():
+    """Verifica o status e limites da API"""
+    headers = get_api_headers()
+    
+    try:
+        response = requests.get(
+            f'{API_BASE_URL}/status',
+            headers=headers,
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            if 'response' in data:
+                status = data['response']
+                account = status.get('account', {})
+                subscription = status.get('subscription', {})
+                requests_info = status.get('requests', {})
+                
+                requests_remaining = requests_info.get('limit_day', 0) - requests_info.get('current', 0)
+                
+                return True, requests_remaining, {
+                    'account': account,
+                    'subscription': subscription,
+                    'requests': requests_info
+                }
+            elif 'errors' in data and data['errors']:
+                error_msg = str(data['errors'])
+                return False, 0, error_msg
+        else:
+            return False, 0, f"Status Code: {response.status_code}"
+    except Exception as e:
+        return False, 0, str(e)
 
-# Detectar tipo de API na inicialização
-if API_TYPE is None:
-    API_TYPE = detect_api_type()
+def get_fixtures(date_str):
+    """Busca jogos da API-Football"""
+    headers = get_api_headers()
+    
+    try:
+        response = requests.get(
+            f'{API_BASE_URL}/fixtures',
+            headers=headers,
+            params={'date': date_str},
+            timeout=20
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            
+            # Verificar se há erros na resposta
+            if 'errors' in data and data['errors']:
+                st.error(f"Erro da API: {data['errors']}")
+                return []
+            
+            fixtures = data.get('response', [])
+            return fixtures
+        else:
+            st.error(f"Erro API: {response.status_code}")
+            try:
+                error_data = response.json()
+                st.error(f"Detalhes: {error_data}")
+            except:
+                st.error(f"Resposta: {response.text}")
+            return []
+    except Exception as e:
+        st.error(f"Erro de conexão: {str(e)}")
+        return []
 
 def check_api_status():
     """Verifica o status e limites da API"""
@@ -582,19 +599,27 @@ def main():
     with st.sidebar:
         st.title("⚙️ Configurações")
         
-        # Verificar status da API
-        api_ok, requests_left, api_status = check_api_status()
+        # Modo demonstração
+        demo_mode = st.checkbox("🎮 Modo Demonstração", help="Usar dados simulados sem gastar API")
         
-        if not api_ok:
-            st.error("❌ Problema com a API")
-            st.error(f"Erro: {api_status}")
-        else:
-            st.success(f"✅ API conectada")
-            if requests_left > 0:
-                st.info(f"📊 Requests restantes hoje: {requests_left}")
+        if not demo_mode:
+            # Verificar status da API
+            api_ok, requests_left, api_status = check_api_status()
+            
+            if not api_ok:
+                st.error("❌ Problema com a API")
+                st.error(f"Erro: {api_status}")
+                st.info("💡 Ative o Modo Demonstração para testar")
             else:
-                st.warning(f"⚠️ Sem requests restantes hoje!")
-                st.info("💡 A API reseta à meia-noite UTC")
+                st.success(f"✅ API conectada")
+                if requests_left > 0:
+                    st.info(f"📊 Requests restantes hoje: {requests_left}")
+                else:
+                    st.warning(f"⚠️ Sem requests restantes hoje!")
+                    st.info("💡 A API reseta à meia-noite UTC")
+                    st.info("💡 Use o Modo Demonstração por enquanto")
+        else:
+            st.info("🎮 Modo Demonstração ativo")
         
         # Data selecionada
         selected_date = st.date_input(
