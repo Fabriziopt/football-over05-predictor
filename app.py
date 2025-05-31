@@ -23,10 +23,43 @@ st.set_page_config(
 # SUA API Key - API-Football oficial
 API_KEY = "2aad0db0e5b88b3a080bdc85461a919"
 
-# Diretório para salvar modelos
-MODEL_DIR = "models"
-if not os.path.exists(MODEL_DIR):
-    os.makedirs(MODEL_DIR)
+# Modo demonstração (para testar sem gastar requests)
+DEMO_MODE = st.sidebar.checkbox("🎮 Modo Demonstração", value=False, help="Use dados simulados para testar o sistema")
+
+def check_api_status():
+    """Verifica o status e limites da API"""
+    headers = {
+        'x-apisports-key': API_KEY
+    }
+    
+    try:
+        response = requests.get(
+            'https://v3.football.api-sports.io/status',
+            headers=headers,
+            timeout=10
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            if 'response' in data:
+                status = data['response']
+                requests_remaining = status.get('requests', {}).get('limit_day', 0) - status.get('requests', {}).get('current', 0)
+                return True, requests_remaining, status
+            elif 'errors' in data:
+                return False, 0, data['errors']
+        return False, 0, f"Status Code: {response.status_code}"
+    except Exception as e:
+        return False, 0, str(e)
+
+# Verificar status da API no início
+api_ok, requests_left, api_status = check_api_status()
+
+if not api_ok:
+    st.sidebar.error("❌ Problema com a API")
+    st.sidebar.error(f"Erro: {api_status}")
+else:
+    st.sidebar.success(f"✅ API conectada")
+    st.sidebar.info(f"📊 Requests restantes hoje: {requests_left}")
 
 # CSS Profissional
 st.markdown("""
@@ -480,6 +513,20 @@ def main():
     # Sidebar
     with st.sidebar:
         st.title("⚙️ Configurações")
+        
+        # Verificar status da API
+        api_ok, requests_left, api_status = check_api_status()
+        
+        if not api_ok:
+            st.error("❌ Problema com a API")
+            st.error(f"Erro: {api_status}")
+        else:
+            st.success(f"✅ API conectada")
+            if requests_left > 0:
+                st.info(f"📊 Requests restantes hoje: {requests_left}")
+            else:
+                st.warning(f"⚠️ Sem requests restantes hoje!")
+                st.info("💡 A API reseta à meia-noite UTC")
         
         # Data selecionada
         selected_date = st.date_input(
