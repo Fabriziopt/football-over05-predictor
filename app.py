@@ -186,8 +186,46 @@ def get_fixtures(date_str):
         st.error(f"Erro de conexão: {str(e)}")
         return []
 
-def collect_historical_data(days=30):
+def load_historical_data():
+    """Carrega dados históricos do arquivo local"""
+    data_files = [
+        "data/historical_matches.parquet",
+        "data/historical_matches.csv",
+        "historical_matches.parquet",
+        "historical_matches.csv"
+    ]
+    
+    for file_path in data_files:
+        if os.path.exists(file_path):
+            try:
+                if file_path.endswith('.parquet'):
+                    df = pd.read_parquet(file_path)
+                else:
+                    df = pd.read_csv(file_path)
+                
+                # Converter para o formato esperado
+                df['over_05'] = (df['ht_home'] + df['ht_away']) > 0
+                return df, f"✅ {len(df)} jogos carregados do arquivo local"
+            except Exception as e:
+                continue
+    
+    return None, "❌ Nenhum arquivo de dados históricos encontrado"
+
+def collect_historical_data(days=30, use_cached=True):
     """Coleta dados históricos para ML"""
+    # Tentar usar dados em cache primeiro
+    if use_cached:
+        df, message = load_historical_data()
+        if df is not None:
+            st.info(message)
+            # Filtrar apenas os últimos X dias se necessário
+            if days < 730:
+                cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+                df = df[df['date'] >= cutoff_date]
+                st.info(f"📊 Filtrado para {len(df)} jogos dos últimos {days} dias")
+            return df
+    
+    # Se não houver cache, buscar da API (método antigo)
     all_data = []
     progress_bar = st.progress(0)
     status_text = st.empty()
@@ -255,6 +293,27 @@ def extract_match_features(match):
 
 def prepare_ml_features(df):
     """Prepara features para o modelo ML"""
+    # Garantir que temos as colunas necessárias
+    if 'over_05' not in df.columns and 'ht_home' in df.columns and 'ht_away' in df.columns:
+        df['over_05'] = (df['ht_home'] + df['ht_away']) > 0
+    
+    if 'ht_total_goals' not in df.columns and 'ht_home' in df.columns and 'ht_away' in df.columns:
+        df['ht_total_goals'] = df['ht_home'] + df['ht_away']
+    
+    # Mapear nomes de colunas se necessário
+    column_mapping = {
+        'home_team_id': 'home_team_id',
+        'away_team_id': 'away_team_id',
+        'ht_home': 'ht_home_goals',
+        'ht_away': 'ht_away_goals',
+        'league_id': 'league_id'
+    }
+    
+    # Criar colunas compatíveis se necessário
+    for old_col, new_col in column_mapping.items():
+        if old_col in df.columns and new_col not in df.columns:
+            df[new_col] = df[old_col]
+    
     # Estatísticas por time
     team_stats = {}
     
@@ -316,21 +375,24 @@ def prepare_ml_features(df):
         features.append(feature_row)
         
         # Atualizar stats após o jogo
+        ht_home_goals = row.get('ht_home_goals', row.get('ht_home', 0))
+        ht_away_goals = row.get('ht_away_goals', row.get('ht_away', 0))
+        
         team_stats[home_id]['games'] += 1
         team_stats[home_id]['over_05'] += row['over_05']
-        team_stats[home_id]['goals_scored'] += row['ht_home_goals']
-        team_stats[home_id]['goals_conceded'] += row['ht_away_goals']
+        team_stats[home_id]['goals_scored'] += ht_home_goals
+        team_stats[home_id]['goals_conceded'] += ht_away_goals
         team_stats[home_id]['home_games'] += 1
         team_stats[home_id]['home_over'] += row['over_05']
-        team_stats[home_id]['home_goals'] += row['ht_home_goals']
+        team_stats[home_id]['home_goals'] += ht_home_goals
         
         team_stats[away_id]['games'] += 1
         team_stats[away_id]['over_05'] += row['over_05']
-        team_stats[away_id]['goals_scored'] += row['ht_away_goals']
-        team_stats[away_id]['goals_conceded'] += row['ht_home_goals']
+        team_stats[away_id]['goals_scored'] += ht_away_goals
+        team_stats[away_id]['goals_conceded'] += ht_home_goals
         team_stats[away_id]['away_games'] += 1
         team_stats[away_id]['away_over'] += row['over_05']
-        team_stats[away_id]['away_goals'] += row['ht_away_goals']
+        team_stats[away_id]['away_goals'] += ht_away_goals
     
     return pd.DataFrame(features), team_stats
 
@@ -595,8 +657,14 @@ def main():
         days_training = st.slider(
             "📊 Dias para treinamento:",
             min_value=15,
-            max_value=60,
-            value=30
+            max_value=730,  # Até 2 anos
+            value=365  # 1 ano por padrão
+        )
+        
+        use_cache = st.checkbox(
+            "💾 Usar dados em cache",
+            value=True,
+            help="Usar dados históricos salvos localmente (muito mais rápido!)"
         )
         
         # Status do modelo
@@ -686,35 +754,57 @@ def main():
                         </div>
                         """.format(avg_confidence), unsafe_allow_html=True)
                     
-                    # Top previsões
+                    # Top previsões - ORDENADAS POR CONFIANÇA (MAIOR PARA MENOR)
                     st.subheader("🏆 Melhores Apostas do Dia")
                     
-                    for i, pred in enumerate(predictions[:10]):
-                        if pred['confidence'] > 65:  # Apenas alta confiança
+                    # Filtrar apenas OVER 0.5 com alta confiança e ordenar
+                    best_bets = [p for p in predictions if p['prediction'] == 'OVER 0.5' and p['confidence'] > 65]
+                    best_bets.sort(key=lambda x: x['confidence'], reverse=True)  # Maior confiança primeiro
+                    
+                    if best_bets:
+                        for i, pred in enumerate(best_bets[:10]):
+                            # Converter horário UTC para Portugal (UTC+0 no inverno, UTC+1 no verão)
+                            from datetime import datetime
+                            try:
+                                # Parse do horário UTC
+                                utc_time = datetime.strptime(pred['kickoff'][:16], '%Y-%m-%dT%H:%M')
+                                # Adicionar 0 horas (Portugal no inverno) ou 1 hora (verão)
+                                # Por simplicidade, vamos usar UTC+0 (você pode ajustar conforme necessário)
+                                pt_time = utc_time  # Portugal está em UTC+0 no inverno
+                                hora_portugal = pt_time.strftime('%H:%M')
+                            except:
+                                hora_portugal = pred['kickoff'][11:16]
+                            
                             confidence_class = "accuracy-high" if pred['confidence'] > 75 else "accuracy-medium"
                             
                             st.markdown(f"""
                             <div class="prediction-card">
                                 <h3>⚽ {pred['home_team']} vs {pred['away_team']}</h3>
                                 <p><strong>🏆 Liga:</strong> {pred['league']} ({pred['country']})</p>
-                                <p><strong>⏰ Horário:</strong> {pred['kickoff'][11:16]}</p>
+                                <p><strong>🕐 Horário PT:</strong> {hora_portugal}</p>
                                 <hr style="opacity: 0.3;">
                                 <p><strong>🎯 Previsão ML:</strong> {pred['prediction']}</p>
                                 <p><strong>💯 Confiança:</strong> <span class="{confidence_class}">{pred['confidence']:.1f}%</span></p>
                                 <p><strong>📊 Probabilidades:</strong> Over {pred['probability_over']:.1f}% | Under {pred['probability_under']:.1f}%</p>
                             </div>
                             """, unsafe_allow_html=True)
+                    else:
+                        st.info("🤷 Nenhuma aposta OVER 0.5 com boa confiança encontrada hoje")
                     
                     # Todas as previsões
                     with st.expander("📋 Ver Todas as Previsões"):
                         pred_df = pd.DataFrame([{
-                            'Hora': p['kickoff'][11:16],
+                            'Hora PT': datetime.strptime(p['kickoff'][:16], '%Y-%m-%dT%H:%M').strftime('%H:%M'),
                             'Casa': p['home_team'],
                             'Fora': p['away_team'],
                             'Liga': p['league'],
                             'Previsão': p['prediction'],
                             'Confiança': f"{p['confidence']:.1f}%"
                         } for p in predictions])
+                        
+                        # Ordenar por confiança (decrescente)
+                        pred_df['_confidence'] = [p['confidence'] for p in predictions]
+                        pred_df = pred_df.sort_values('_confidence', ascending=False).drop('_confidence', axis=1)
                         
                         st.dataframe(pred_df, use_container_width=True)
                 
@@ -826,7 +916,7 @@ def main():
         if st.button("🚀 Iniciar Treinamento", type="primary"):
             # Coletar dados
             with st.spinner(f"📊 Coletando {days_training} dias de dados históricos..."):
-                df = collect_historical_data(days=days_training)
+                df = collect_historical_data(days=days_training, use_cached=use_cache)
             
             if df.empty:
                 st.error("❌ Não foi possível coletar dados")
@@ -923,21 +1013,57 @@ def main():
                 </div>
                 """, unsafe_allow_html=True)
             
+            # Taxa de acerto histórica
+            st.subheader("📊 Performance Histórica do Modelo")
+            
+            if 'total_samples' in model_data:
+                total_analyzed = model_data['total_samples']
+                accuracy_rate = best_metrics['test_accuracy'] * 100
+                correct_predictions = int(total_analyzed * best_metrics['test_accuracy'])
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.markdown(f"""
+                    <div class="metric-card">
+                        <h3>📅 Jogos Analisados</h3>
+                        <h1>{total_analyzed:,}</h1>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with col2:
+                    st.markdown(f"""
+                    <div class="metric-card">
+                        <h3>✅ Acertos</h3>
+                        <h1>{correct_predictions:,}</h1>
+                    </div>
+                    """, unsafe_allow_html=True)
+                
+                with col3:
+                    st.markdown(f"""
+                    <div class="metric-card">
+                        <h3>📈 Taxa de Acerto</h3>
+                        <h1>{accuracy_rate:.1f}%</h1>
+                    </div>
+                    """, unsafe_allow_html=True)
+            
             # Explicação das métricas
             with st.expander("📚 Entenda as Métricas"):
                 st.write("""
-                - **Acurácia**: Percentual total de acertos
-                - **Precisão**: Quando prevê OVER, quantas vezes acerta
-                - **Recall**: Dos jogos que foram OVER, quantos o modelo identificou
+                - **Acurácia**: Percentual total de acertos do modelo
+                - **Precisão**: Quando o modelo prevê OVER 0.5, quantas vezes acerta
+                - **Recall**: Dos jogos que foram OVER 0.5, quantos o modelo identificou
                 - **F1-Score**: Média harmônica entre Precisão e Recall (métrica principal)
+                - **Taxa de Acerto**: Percentual de previsões corretas no conjunto de teste
                 """)
             
             # Informações do modelo
             st.subheader("ℹ️ Informações do Modelo")
             st.info(f"""
             - **Data de Treinamento**: {model_data['training_date']}
-            - **Total de Jogos Analisados**: {model_data['total_samples']}
-            - **Times no Banco de Dados**: {len(model_data['team_stats'])}
+            - **Total de Jogos Analisados**: {model_data['total_samples']:,}
+            - **Times no Banco de Dados**: {len(model_data['team_stats']):,}
+            - **Algoritmo**: {best_model_name}
             """)
         else:
             st.info("🤖 Nenhum modelo treinado ainda")
