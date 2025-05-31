@@ -27,8 +27,6 @@ if 'model_trained' not in st.session_state:
     st.session_state.model_trained = False
 
 # Configuração da API Key
-# Primeiro tenta ler do Streamlit secrets (produção)
-# Se não encontrar, usa a key diretamente (desenvolvimento local)
 try:
     API_KEY = st.secrets["API_KEY"]
 except:
@@ -45,7 +43,7 @@ try:
         os.makedirs(MODEL_DIR)
 except Exception as e:
     st.error(f"Erro ao criar diretório de modelos: {e}")
-    MODEL_DIR = "/tmp/models"  # Usar diretório temporário como fallback
+    MODEL_DIR = "/tmp/models"
     if not os.path.exists(MODEL_DIR):
         os.makedirs(MODEL_DIR)
 
@@ -135,17 +133,11 @@ def check_api_status():
                     'requests': requests_info
                 }
             elif 'errors' in data:
-                # Tratamento melhorado de erros
                 if isinstance(data['errors'], list) and len(data['errors']) > 0:
                     error_msg = data['errors'][0]
                 elif isinstance(data['errors'], dict):
                     error_msg = data['errors'].get('token', str(data['errors']))
                 else:
-                # Fazer previsões
-                with st.spinner("🤖 Aplicando Machine Learning..."):
-                    predictions = predict_matches(fixtures, model_data)
-                
-                if predictions:
                     error_msg = str(data['errors'])
                 return False, 0, error_msg
         else:
@@ -153,7 +145,6 @@ def check_api_status():
     except Exception as e:
         return False, 0, str(e)
 
-# Cache para armazenar dados
 @st.cache_data(ttl=3600)
 def get_fixtures_cached(date_str):
     """Busca jogos com cache de 1 hora"""
@@ -174,7 +165,6 @@ def get_fixtures(date_str):
         if response.status_code == 200:
             data = response.json()
             
-            # Verificar se há erros na resposta
             if 'errors' in data and data['errors']:
                 st.error(f"Erro da API: {data['errors']}")
                 return []
@@ -211,7 +201,8 @@ def load_historical_data():
                     df = pd.read_csv(file_path)
                 
                 # Converter para o formato esperado
-                df['over_05'] = (df['ht_home'] + df['ht_away']) > 0
+                if 'ht_home' in df.columns and 'ht_away' in df.columns:
+                    df['over_05'] = (df['ht_home'] + df['ht_away']) > 0
                 return df, f"✅ {len(df)} jogos carregados do arquivo local"
             except Exception as e:
                 continue
@@ -220,24 +211,21 @@ def load_historical_data():
 
 def collect_historical_data(days=30, use_cached=True):
     """Coleta dados históricos para ML"""
-    # Tentar usar dados em cache primeiro
     if use_cached:
         df, message = load_historical_data()
         if df is not None:
             st.info(message)
-            # Filtrar apenas os últimos X dias se necessário
             if days < 730:
                 cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
-                df = df[df['date'] >= cutoff_date]
-                st.info(f"📊 Filtrado para {len(df)} jogos dos últimos {days} dias")
+                if 'date' in df.columns:
+                    df = df[df['date'] >= cutoff_date]
+                    st.info(f"📊 Filtrado para {len(df)} jogos dos últimos {days} dias")
             return df
     
-    # Se não houver cache, buscar da API (método antigo)
+    # Se não houver cache, buscar da API
     all_data = []
     progress_bar = st.progress(0)
     status_text = st.empty()
-    
-    headers = get_api_headers()
     
     for i in range(days):
         date = datetime.now() - timedelta(days=i+1)
@@ -253,7 +241,7 @@ def collect_historical_data(days=30, use_cached=True):
                     all_data.append(match_data)
         
         progress_bar.progress((i+1)/days)
-        time.sleep(0.3)  # Rate limiting
+        time.sleep(0.3)
     
     progress_bar.empty()
     status_text.empty()
@@ -263,19 +251,16 @@ def collect_historical_data(days=30, use_cached=True):
 def extract_match_features(match):
     """Extrai features para ML"""
     try:
-        # Dados básicos
         home_team = match['teams']['home']['name']
         away_team = match['teams']['away']['name']
         league_id = match['league']['id']
         league_name = match['league']['name']
         country = match['league']['country']
         
-        # Resultado HT
         ht_home = match['score']['halftime']['home']
         ht_away = match['score']['halftime']['away']
         over_05 = 1 if (ht_home + ht_away) > 0 else 0
         
-        # Features do jogo
         features = {
             'date': match['fixture']['date'][:10],
             'timestamp': match['fixture']['timestamp'],
@@ -299,83 +284,36 @@ def extract_match_features(match):
         return None
 
 def prepare_ml_features(df):
-    """Prepara features para o modelo ML com métricas avançadas e normalização de outliers"""
+    """Prepara features para o modelo ML"""
     # Garantir que temos as colunas necessárias
-    if 'over_05' not in df.columns and 'ht_home' in df.columns and 'ht_away' in df.columns:
+    if 'over_05' not in df.columns and 'ht_home_goals' in df.columns and 'ht_away_goals' in df.columns:
+        df['over_05'] = (df['ht_home_goals'] + df['ht_away_goals']) > 0
+    elif 'over_05' not in df.columns and 'ht_home' in df.columns and 'ht_away' in df.columns:
         df['over_05'] = (df['ht_home'] + df['ht_away']) > 0
     
-    if 'ht_total_goals' not in df.columns and 'ht_home' in df.columns and 'ht_away' in df.columns:
-        df['ht_total_goals'] = df['ht_home'] + df['ht_away']
-    
-    # Mapear nomes de colunas se necessário
-    column_mapping = {
-        'home_team_id': 'home_team_id',
-        'away_team_id': 'away_team_id',
-        'ht_home': 'ht_home_goals',
-        'ht_away': 'ht_away_goals',
-        'league_id': 'league_id'
-    }
-    
-    # Criar colunas compatíveis se necessário
-    for old_col, new_col in column_mapping.items():
-        if old_col in df.columns and new_col not in df.columns:
-            df[new_col] = df[old_col]
+    if 'ht_total_goals' not in df.columns:
+        if 'ht_home_goals' in df.columns and 'ht_away_goals' in df.columns:
+            df['ht_total_goals'] = df['ht_home_goals'] + df['ht_away_goals']
+        elif 'ht_home' in df.columns and 'ht_away' in df.columns:
+            df['ht_total_goals'] = df['ht_home'] + df['ht_away']
     
     # Estatísticas por time
     team_stats = {}
     
-    # Primeiro, inicializar todos os times
+    # Inicializar todos os times
     for idx, row in df.iterrows():
         home_team = row['home_team_id']
         away_team = row['away_team_id']
         
-        if home_team not in team_stats:
-            team_stats[home_team] = {
-                'games': 0, 
-                'over_05': 0, 
-                'over_05_binary': 0,  # NOVO: conta apenas se teve Over (1) ou não (0)
-                'goals_scored': 0, 
-                'goals_conceded': 0,
-                'goals_capped': 0,  # NOVO: gols com cap de 1
-                'home_games': 0, 
-                'home_over': 0, 
-                'home_over_binary': 0,  # NOVO
-                'home_goals': 0,
-                'home_goals_capped': 0,  # NOVO
-                'away_games': 0, 
-                'away_over': 0,
-                'away_over_binary': 0,  # NOVO
-                'away_goals': 0,
-                'away_goals_capped': 0,  # NOVO
-                'goals_list': [],
-                'over_list': [],
-                'extreme_games': 0  # NOVO: conta jogos com mais de 2 gols HT
-            }
-        
-        if away_team not in team_stats:
-            team_stats[away_team] = {
-                'games': 0, 
-                'over_05': 0,
-                'over_05_binary': 0,  # NOVO
-                'goals_scored': 0, 
-                'goals_conceded': 0,
-                'goals_capped': 0,  # NOVO
-                'home_games': 0, 
-                'home_over': 0,
-                'home_over_binary': 0,  # NOVO
-                'home_goals': 0,
-                'home_goals_capped': 0,  # NOVO
-                'away_games': 0, 
-                'away_over': 0,
-                'away_over_binary': 0,  # NOVO
-                'away_goals': 0,
-                'away_goals_capped': 0,  # NOVO
-                'goals_list': [],
-                'over_list': [],
-                'extreme_games': 0  # NOVO
-            }
+        for team_id in [home_team, away_team]:
+            if team_id not in team_stats:
+                team_stats[team_id] = {
+                    'games': 0, 'over_05': 0, 'goals_scored': 0, 'goals_conceded': 0,
+                    'home_games': 0, 'home_over': 0, 'home_goals': 0,
+                    'away_games': 0, 'away_over': 0, 'away_goals': 0,
+                    'goals_list': [], 'over_list': []
+                }
     
-    # Calcular features
     features = []
     
     for idx, row in df.iterrows():
@@ -384,109 +322,30 @@ def prepare_ml_features(df):
         
         # Features do time da casa
         home_stats = team_stats[home_id]
-        
-        # TAXAS BINÁRIAS (o que você sugeriu - conta apenas se foi Over ou não)
-        home_over_rate_binary = home_stats['over_05_binary'] / max(home_stats['games'], 1)
-        home_home_over_rate_binary = home_stats['home_over_binary'] / max(home_stats['home_games'], 1)
-        
-        # MÉDIAS COM CAP (limita impacto de jogos extremos)
-        home_avg_goals_capped = home_stats['goals_capped'] / max(home_stats['games'], 1)
-        home_home_avg_goals_capped = home_stats['home_goals_capped'] / max(home_stats['home_games'], 1)
-        
-        # Métricas tradicionais (para comparação)
         home_over_rate = home_stats['over_05'] / max(home_stats['games'], 1)
         home_avg_goals = home_stats['goals_scored'] / max(home_stats['games'], 1)
         home_home_over_rate = home_stats['home_over'] / max(home_stats['home_games'], 1)
         
-        # Taxa de jogos extremos
-        home_extreme_rate = home_stats['extreme_games'] / max(home_stats['games'], 1)
-        
         # Features do time visitante
         away_stats = team_stats[away_id]
-        
-        # TAXAS BINÁRIAS
-        away_over_rate_binary = away_stats['over_05_binary'] / max(away_stats['games'], 1)
-        away_away_over_rate_binary = away_stats['away_over_binary'] / max(away_stats['away_games'], 1)
-        
-        # MÉDIAS COM CAP
-        away_avg_goals_capped = away_stats['goals_capped'] / max(away_stats['games'], 1)
-        away_away_avg_goals_capped = away_stats['away_goals_capped'] / max(away_stats['away_games'], 1)
-        
-        # Métricas tradicionais
         away_over_rate = away_stats['over_05'] / max(away_stats['games'], 1)
         away_avg_goals = away_stats['goals_scored'] / max(away_stats['games'], 1)
         away_away_over_rate = away_stats['away_over'] / max(away_stats['away_games'], 1)
         
-        # Taxa de jogos extremos
-        away_extreme_rate = away_stats['extreme_games'] / max(away_stats['games'], 1)
-        
         # Features da liga
         league_games = df[df['league_id'] == row['league_id']]
         league_over_rate = league_games['over_05'].mean() if len(league_games) > 0 else 0.5
-        league_over_rate_binary = (league_games['over_05'] > 0).mean() if len(league_games) > 0 else 0.5
-        
-        # FEATURES AVANÇADAS COM NOVA LÓGICA
-        
-        # 1. Combined Score Binário (usa taxa binária)
-        home_strength_binary = home_over_rate_binary * home_avg_goals_capped
-        away_strength_binary = away_over_rate_binary * away_avg_goals_capped
-        combined_score_binary = home_strength_binary + away_strength_binary
-        
-        # 2. Eficiência de Over (quantos gols precisa em média para fazer Over)
-        home_efficiency = home_avg_goals / home_over_rate_binary if home_over_rate_binary > 0 else 10
-        away_efficiency = away_avg_goals / away_over_rate_binary if away_over_rate_binary > 0 else 10
-        combined_efficiency = (home_efficiency + away_efficiency) / 2
-        
-        # 3. Consistência Binária (desvio das taxas de Over)
-        if len(home_stats['over_list']) > 1:
-            home_consistency = 1 - np.std(home_stats['over_list'])
-        else:
-            home_consistency = 0.5
-            
-        if len(away_stats['over_list']) > 1:
-            away_consistency = 1 - np.std(away_stats['over_list'])
-        else:
-            away_consistency = 0.5
-        
-        # 4. Momentum Binário (últimos 5 jogos - Over ou não)
-        home_recent = home_stats['over_list'][-5:] if len(home_stats['over_list']) >= 5 else home_stats['over_list']
-        away_recent = away_stats['over_list'][-5:] if len(away_stats['over_list']) >= 5 else away_stats['over_list']
-        
-        home_momentum = sum([1 if x > 0 else 0 for x in home_recent]) / len(home_recent) if home_recent else home_over_rate_binary
-        away_momentum = sum([1 if x > 0 else 0 for x in away_recent]) / len(away_recent) if away_recent else away_over_rate_binary
-        
-        # 5. Risco de Outlier (baseado em jogos extremos)
-        outlier_risk = (home_extreme_rate + away_extreme_rate) / 2
         
         feature_row = {
-            # Features binárias (principais)
-            'home_over_rate_binary': home_over_rate_binary,
-            'home_avg_goals_capped': home_avg_goals_capped,
-            'home_home_over_rate_binary': home_home_over_rate_binary,
-            'away_over_rate_binary': away_over_rate_binary,
-            'away_avg_goals_capped': away_avg_goals_capped,
-            'away_away_over_rate_binary': away_away_over_rate_binary,
-            'league_over_rate_binary': league_over_rate_binary,
-            'combined_over_rate_binary': (home_over_rate_binary + away_over_rate_binary) / 2,
-            'combined_goals_capped': home_avg_goals_capped + away_avg_goals_capped,
-            
-            # Features tradicionais (para comparação)
             'home_over_rate': home_over_rate,
+            'home_avg_goals': home_avg_goals,
+            'home_home_over_rate': home_home_over_rate,
             'away_over_rate': away_over_rate,
+            'away_avg_goals': away_avg_goals,
+            'away_away_over_rate': away_away_over_rate,
+            'league_over_rate': league_over_rate,
+            'combined_over_rate': (home_over_rate + away_over_rate) / 2,
             'combined_goals': home_avg_goals + away_avg_goals,
-            
-            # Features avançadas
-            'combined_score_binary': combined_score_binary,
-            'combined_efficiency': 1 / combined_efficiency if combined_efficiency > 0 else 0,
-            'home_consistency': home_consistency,
-            'away_consistency': away_consistency,
-            'consistency_avg': (home_consistency + away_consistency) / 2,
-            'home_momentum': home_momentum,
-            'away_momentum': away_momentum,
-            'momentum_sum': home_momentum + away_momentum,
-            'outlier_risk': outlier_risk,
-            'extreme_game_factor': 1 - outlier_risk,  # Penaliza times com muitos jogos extremos
-            
             'target': row['over_05']
         }
         
@@ -495,57 +354,42 @@ def prepare_ml_features(df):
         # Atualizar stats após o jogo
         ht_home_goals = row.get('ht_home_goals', row.get('ht_home', 0))
         ht_away_goals = row.get('ht_away_goals', row.get('ht_away', 0))
-        ht_total = ht_home_goals + ht_away_goals
         
-        # Stats binários/capped
+        # Stats do time da casa
         team_stats[home_id]['games'] += 1
         team_stats[home_id]['over_05'] += row['over_05']
-        team_stats[home_id]['over_05_binary'] += 1 if row['over_05'] > 0 else 0  # Conta apenas se foi Over
         team_stats[home_id]['goals_scored'] += ht_home_goals
-        team_stats[home_id]['goals_capped'] += min(ht_home_goals, 1)  # Cap em 1 gol
         team_stats[home_id]['goals_conceded'] += ht_away_goals
         team_stats[home_id]['home_games'] += 1
         team_stats[home_id]['home_over'] += row['over_05']
-        team_stats[home_id]['home_over_binary'] += 1 if row['over_05'] > 0 else 0
         team_stats[home_id]['home_goals'] += ht_home_goals
-        team_stats[home_id]['home_goals_capped'] += min(ht_home_goals, 1)
         team_stats[home_id]['goals_list'].append(ht_home_goals)
         team_stats[home_id]['over_list'].append(row['over_05'])
-        if ht_total > 2:  # Jogo extremo
-            team_stats[home_id]['extreme_games'] += 1
         
+        # Stats do time visitante
         team_stats[away_id]['games'] += 1
         team_stats[away_id]['over_05'] += row['over_05']
-        team_stats[away_id]['over_05_binary'] += 1 if row['over_05'] > 0 else 0
         team_stats[away_id]['goals_scored'] += ht_away_goals
-        team_stats[away_id]['goals_capped'] += min(ht_away_goals, 1)
         team_stats[away_id]['goals_conceded'] += ht_home_goals
         team_stats[away_id]['away_games'] += 1
         team_stats[away_id]['away_over'] += row['over_05']
-        team_stats[away_id]['away_over_binary'] += 1 if row['over_05'] > 0 else 0
         team_stats[away_id]['away_goals'] += ht_away_goals
-        team_stats[away_id]['away_goals_capped'] += min(ht_away_goals, 1)
         team_stats[away_id]['goals_list'].append(ht_away_goals)
         team_stats[away_id]['over_list'].append(row['over_05'])
-        if ht_total > 2:  # Jogo extremo
-            team_stats[away_id]['extreme_games'] += 1
     
     return pd.DataFrame(features), team_stats
 
 def train_ml_model(df):
-    """Treina o modelo de ML com análise por liga"""
-    # Preparar features
+    """Treina o modelo de ML"""
     features_df, team_stats = prepare_ml_features(df)
     
-    # Adicionar análise por liga
     league_analysis = analyze_leagues(df)
     
-    # Separar features e target
     feature_cols = [col for col in features_df.columns if col != 'target']
     X = features_df[feature_cols]
     y = features_df['target']
     
-    # Dividir dados: 70% treino, 15% validação, 15% teste
+    # Dividir dados
     X_temp, X_test, y_temp, y_test = train_test_split(X, y, test_size=0.15, random_state=42, stratify=y)
     X_train, X_val, y_train, y_val = train_test_split(X_temp, y_temp, test_size=0.176, random_state=42, stratify=y_temp)
     
@@ -555,7 +399,7 @@ def train_ml_model(df):
     X_val_scaled = scaler.transform(X_val)
     X_test_scaled = scaler.transform(X_test)
     
-    # Treinar múltiplos modelos
+    # Treinar modelos
     models = {
         'RandomForest': RandomForestClassifier(
             n_estimators=200, 
@@ -576,17 +420,13 @@ def train_ml_model(df):
     best_score = 0
     results = {}
     
-    # Treinar e validar cada modelo
     st.info("🧠 Treinando modelos de ML...")
     for name, model in models.items():
-        # Treinar
         model.fit(X_train_scaled, y_train)
         
-        # Validar
         val_pred = model.predict(X_val_scaled)
         val_acc = accuracy_score(y_val, val_pred)
         
-        # Testar
         test_pred = model.predict(X_test_scaled)
         test_acc = accuracy_score(y_test, test_pred)
         test_prec = precision_score(y_test, test_pred)
@@ -607,24 +447,23 @@ def train_ml_model(df):
             best_score = test_f1
             best_model = model
     
-    # Salvar melhor modelo
+    # Salvar modelo
     model_data = {
         'model': best_model,
         'scaler': scaler,
         'feature_cols': feature_cols,
         'team_stats': team_stats,
-        'league_analysis': league_analysis,  # Adicionar análise por liga
+        'league_analysis': league_analysis,
         'results': results,
         'training_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
         'total_samples': len(df),
         'training_days': len(df['date'].unique()) if 'date' in df.columns else 0
     }
     
-    # Salvar no session state
     st.session_state.trained_model = model_data
     st.session_state.model_trained = True
     
-    # Tentar salvar em arquivo também
+    # Tentar salvar em arquivo
     try:
         for directory in [MODEL_DIR, "/tmp/models"]:
             try:
@@ -643,7 +482,6 @@ def train_ml_model(df):
 def load_latest_model():
     """Carrega o modelo mais recente"""
     try:
-        # Tentar ambos os diretórios
         for directory in [MODEL_DIR, "/tmp/models"]:
             if os.path.exists(directory):
                 model_files = [f for f in os.listdir(directory) if f.endswith('.pkl')]
@@ -656,7 +494,7 @@ def load_latest_model():
     return None
 
 def predict_matches(fixtures, model_data):
-    """Faz previsões para os jogos do dia com análise por liga"""
+    """Faz previsões para os jogos do dia"""
     predictions = []
     
     if not model_data:
@@ -669,7 +507,6 @@ def predict_matches(fixtures, model_data):
     league_analysis = model_data.get('league_analysis', {})
     
     for fixture in fixtures:
-        # Apenas jogos não iniciados
         if fixture['fixture']['status']['short'] not in ['NS', 'TBD']:
             continue
         
@@ -678,15 +515,12 @@ def predict_matches(fixtures, model_data):
             away_id = fixture['teams']['away']['id']
             league_name = fixture['league']['name']
             
-            # Verificar se temos dados dos times
             if home_id not in team_stats or away_id not in team_stats:
                 continue
             
-            # Preparar features
             home_stats = team_stats[home_id]
             away_stats = team_stats[away_id]
             
-            # Taxa da liga
             league_info = league_analysis.get(league_name, {})
             league_over_rate = league_info.get('over_rate', 0.5)
             
@@ -705,21 +539,18 @@ def predict_matches(fixtures, model_data):
             features['combined_over_rate'] = (features['home_over_rate'] + features['away_over_rate']) / 2
             features['combined_goals'] = features['home_avg_goals'] + features['away_avg_goals']
             
-            # Criar DataFrame com features
             X = pd.DataFrame([features])[feature_cols]
             X_scaled = scaler.transform(X)
             
-            # Previsão
             pred_proba = model.predict_proba(X_scaled)[0]
             pred_class = model.predict(X_scaled)[0]
             confidence = max(pred_proba) * 100
             
-            # Ajuste baseado na tendência da liga
             league_trend = league_info.get('trend', 'BALANCED')
             if league_trend == 'OVER' and pred_class == 1:
-                confidence = min(confidence * 1.05, 95)  # Boost de 5% para ligas OVER
+                confidence = min(confidence * 1.05, 95)
             elif league_trend == 'UNDER' and pred_class == 1:
-                confidence = confidence * 0.95  # Redução de 5% para ligas UNDER
+                confidence = confidence * 0.95
             
             prediction = {
                 'fixture': fixture,
@@ -742,7 +573,6 @@ def predict_matches(fixtures, model_data):
         except:
             continue
     
-    # Ordenar por confiança
     predictions.sort(key=lambda x: x['confidence'], reverse=True)
     
     return predictions
@@ -754,11 +584,10 @@ def analyze_leagues(df):
     for league_id in df['league_id'].unique():
         league_data = df[df['league_id'] == league_id]
         
-        if len(league_data) >= 10:  # Mínimo 10 jogos
+        if len(league_data) >= 10:
             over_rate = league_data['over_05'].mean()
             avg_goals = league_data['ht_total_goals'].mean()
             
-            # Classificação
             if over_rate >= 0.70:
                 classification = "🔥 LIGA OVER FORTE"
             elif over_rate >= 0.55:
@@ -820,8 +649,8 @@ def main():
         days_training = st.slider(
             "📊 Dias para treinamento:",
             min_value=15,
-            max_value=730,  # Até 2 anos
-            value=365  # 1 ano por padrão
+            max_value=730,
+            value=365
         )
         
         use_cache = st.checkbox(
@@ -837,7 +666,6 @@ def main():
             st.info(f"📅 Treinado em: {model_data['training_date']}")
             st.info(f"📊 Amostras: {model_data['total_samples']}")
             
-            # Mostrar melhor performance
             if 'results' in model_data:
                 results = model_data['results']
                 best_model = max(results.items(), key=lambda x: x[1]['f1_score'])
@@ -865,19 +693,13 @@ def main():
     with tab1:
         st.header(f"🎯 Previsões para {selected_date.strftime('%d/%m/%Y')}")
         
-        # Debug - verificar estado
-        st.write(f"Debug - Model trained: {st.session_state.get('model_trained', False)}")
-        st.write(f"Debug - Model exists: {st.session_state.get('trained_model', None) is not None}")
-        
         # Verificar se há modelo disponível
         model_data = None
         
-        # Primeiro verifica session state
         if st.session_state.get('model_trained', False) and st.session_state.get('trained_model'):
             model_data = st.session_state.trained_model
             st.success("✅ Modelo carregado da sessão")
         else:
-            # Tenta carregar de arquivo
             model_data = load_latest_model()
             if model_data:
                 st.session_state.trained_model = model_data
@@ -887,11 +709,9 @@ def main():
         if not model_data:
             st.warning("⚠️ Treine um modelo primeiro na aba 'Treinar Modelo'")
             
-            # Botão para forçar recarregar
             if st.button("🔄 Tentar carregar modelo novamente"):
                 st.rerun()
         else:
-            # Mostrar informações do modelo
             st.info(f"🤖 Modelo: {model_data.get('training_date', 'Unknown')}")
             st.info(f"📊 Times no banco: {len(model_data.get('team_stats', {}))}")
             
@@ -900,23 +720,10 @@ def main():
             
             with st.spinner("🔍 Buscando jogos do dia..."):
                 fixtures = get_fixtures_cached(date_str)
-            # Mostrar informações do modelo
-            st.info(f"🤖 Modelo: {model_data.get('training_date', 'Unknown')}")
-            st.info(f"📊 Times no banco: {len(model_data.get('team_stats', {}))}")
-            
-            # Buscar jogos do dia
-            date_str = selected_date.strftime('%Y-%m-%d')
-            
-            with st.spinner("🔍 Buscando jogos do dia..."):
-                fixtures = get_fixtures_cached(date_str)
-                
-            # Debug - mostrar quantos jogos foram encontrados
-            st.write(f"Debug: {len(fixtures)} jogos encontrados para {date_str}")
             
             if not fixtures:
                 st.info("📅 Nenhum jogo encontrado para esta data")
                 
-                # Sugestões
                 st.info("""
                 💡 Sugestões:
                 1. Tente uma data diferente (hoje ou amanhã)
@@ -924,14 +731,12 @@ def main():
                 3. Alguns jogos podem ainda não estar disponíveis na API
                 """)
                 
-                # Mostrar botão para testar com data de hoje
                 if st.button("🔄 Buscar jogos de hoje"):
                     today = datetime.now().date()
                     today_str = today.strftime('%Y-%m-%d')
                     fixtures_today = get_fixtures_cached(today_str)
                     st.write(f"Jogos de hoje ({today_str}): {len(fixtures_today)} encontrados")
             else:
-                # Fazer previsões
                 with st.spinner("🤖 Aplicando Machine Learning..."):
                     predictions = predict_matches(fixtures, model_data)
                 
@@ -976,22 +781,17 @@ def main():
                         </div>
                         """.format(avg_confidence), unsafe_allow_html=True)
                     
-                    # Top previsões - ORDENADAS POR CONFIANÇA (MAIOR PARA MENOR)
+                    # Top previsões
                     st.subheader("🏆 Melhores Apostas do Dia")
                     
-                    # Filtrar apenas OVER 0.5 com alta confiança e ordenar
                     best_bets = [p for p in predictions if p['prediction'] == 'OVER 0.5' and p['confidence'] > 65]
-                    best_bets.sort(key=lambda x: x['confidence'], reverse=True)  # Maior confiança primeiro
+                    best_bets.sort(key=lambda x: x['confidence'], reverse=True)
                     
                     if best_bets:
                         for i, pred in enumerate(best_bets[:10]):
-                            # Converter horário UTC para Portugal (UTC+0 no inverno, UTC+1 no verão)
                             try:
-                                # Parse do horário UTC
                                 utc_time = datetime.strptime(pred['kickoff'][:16], '%Y-%m-%dT%H:%M')
-                                # Adicionar 0 horas (Portugal no inverno) ou 1 hora (verão)
-                                # Por simplicidade, vamos usar UTC+0 (você pode ajustar conforme necessário)
-                                pt_time = utc_time  # Portugal está em UTC+0 no inverno
+                                pt_time = utc_time
                                 hora_portugal = pt_time.strftime('%H:%M')
                             except:
                                 hora_portugal = pred['kickoff'][11:16]
@@ -1014,11 +814,10 @@ def main():
                     
                     # Todas as previsões
                     with st.expander("📋 Ver Todas as Previsões"):
-                        # Filtrar apenas OVER 0.5 para a tabela também
-                        over_predictions = [p for p in predictions if p['prediction'] == 'OVER 0.5']
+                        over_predictions_list = [p for p in predictions if p['prediction'] == 'OVER 0.5']
                         
                         pred_data = []
-                        for p in over_predictions:
+                        for p in over_predictions_list:
                             try:
                                 utc_time = datetime.strptime(p['kickoff'][:16], '%Y-%m-%dT%H:%M')
                                 hora_pt = utc_time.strftime('%H:%M')
@@ -1032,135 +831,11 @@ def main():
                                 'Liga': p['league'],
                                 'Previsão': p['prediction'],
                                 'Confiança': f"{p['confidence']:.1f}%",
-                                '_confidence': p['confidence']  # Para ordenação
+                                '_confidence': p['confidence']
                             })
                         
                         if pred_data:
                             pred_df = pd.DataFrame(pred_data)
-                            # Ordenar por confiança (decrescente) e remover coluna auxiliar
-                            pred_df = pred_df.sort_values('_confidence', ascending=False).drop('_confidence', axis=1)
-                            st.dataframe(pred_df, use_container_width=True)
-                        else:
-                            st.info("Nenhuma previsão OVER 0.5 encontrada")
-                
-                else:
-                    st.info("🤷 Nenhuma previsão disponível (times sem dados históricos)")
-            # Buscar jogos do dia
-            date_str = selected_date.strftime('%Y-%m-%d')
-            
-            with st.spinner("🔍 Buscando jogos do dia..."):
-                fixtures = get_fixtures_cached(date_str)
-            
-            if not fixtures:
-                st.info("📅 Nenhum jogo encontrado para esta data")
-            else:
-                # Fazer previsões
-                with st.spinner("🤖 Aplicando Machine Learning..."):
-                    predictions = predict_matches(fixtures, model_data)
-                
-                if predictions:
-                    # Métricas resumo
-                    col1, col2, col3, col4 = st.columns(4)
-                    
-                    total_games = len(predictions)
-                    high_confidence = len([p for p in predictions if p['confidence'] > 70])
-                    over_predictions = len([p for p in predictions if p['prediction'] == 'OVER 0.5'])
-                    avg_confidence = sum([p['confidence'] for p in predictions]) / len(predictions)
-                    
-                    with col1:
-                        st.markdown("""
-                        <div class="metric-card">
-                            <h3>🎮 Total de Jogos</h3>
-                            <h1>{}</h1>
-                        </div>
-                        """.format(total_games), unsafe_allow_html=True)
-                    
-                    with col2:
-                        st.markdown("""
-                        <div class="metric-card">
-                            <h3>🎯 Alta Confiança</h3>
-                            <h1>{}</h1>
-                        </div>
-                        """.format(high_confidence), unsafe_allow_html=True)
-                    
-                    with col3:
-                        st.markdown("""
-                        <div class="metric-card">
-                            <h3>📈 Over 0.5</h3>
-                            <h1>{}</h1>
-                        </div>
-                        """.format(over_predictions), unsafe_allow_html=True)
-                    
-                    with col4:
-                        st.markdown("""
-                        <div class="metric-card">
-                            <h3>💯 Confiança Média</h3>
-                            <h1>{:.1f}%</h1>
-                        </div>
-                        """.format(avg_confidence), unsafe_allow_html=True)
-                    
-                    # Top previsões - ORDENADAS POR CONFIANÇA (MAIOR PARA MENOR)
-                    st.subheader("🏆 Melhores Apostas do Dia")
-                    
-                    # Filtrar apenas OVER 0.5 com alta confiança e ordenar
-                    best_bets = [p for p in predictions if p['prediction'] == 'OVER 0.5' and p['confidence'] > 65]
-                    best_bets.sort(key=lambda x: x['confidence'], reverse=True)  # Maior confiança primeiro
-                    
-                    if best_bets:
-                        for i, pred in enumerate(best_bets[:10]):
-                            # Converter horário UTC para Portugal (UTC+0 no inverno, UTC+1 no verão)
-                            try:
-                                # Parse do horário UTC
-                                utc_time = datetime.strptime(pred['kickoff'][:16], '%Y-%m-%dT%H:%M')
-                                # Adicionar 0 horas (Portugal no inverno) ou 1 hora (verão)
-                                # Por simplicidade, vamos usar UTC+0 (você pode ajustar conforme necessário)
-                                pt_time = utc_time  # Portugal está em UTC+0 no inverno
-                                hora_portugal = pt_time.strftime('%H:%M')
-                            except:
-                                hora_portugal = pred['kickoff'][11:16]
-                            
-                            confidence_class = "accuracy-high" if pred['confidence'] > 75 else "accuracy-medium"
-                            
-                            st.markdown(f"""
-                            <div class="prediction-card">
-                                <h3>⚽ {pred['home_team']} vs {pred['away_team']}</h3>
-                                <p><strong>🏆 Liga:</strong> {pred['league']} ({pred['country']})</p>
-                                <p><strong>🕐 Horário PT:</strong> {hora_portugal}</p>
-                                <hr style="opacity: 0.3;">
-                                <p><strong>🎯 Previsão ML:</strong> {pred['prediction']}</p>
-                                <p><strong>💯 Confiança:</strong> <span class="{confidence_class}">{pred['confidence']:.1f}%</span></p>
-                                <p><strong>📊 Probabilidades:</strong> Over {pred['probability_over']:.1f}% | Under {pred['probability_under']:.1f}%</p>
-                            </div>
-                            """, unsafe_allow_html=True)
-                    else:
-                        st.info("🤷 Nenhuma aposta OVER 0.5 com boa confiança encontrada hoje")
-                    
-                    # Todas as previsões
-                    with st.expander("📋 Ver Todas as Previsões"):
-                        # Filtrar apenas OVER 0.5 para a tabela também
-                        over_predictions = [p for p in predictions if p['prediction'] == 'OVER 0.5']
-                        
-                        pred_data = []
-                        for p in over_predictions:
-                            try:
-                                utc_time = datetime.strptime(p['kickoff'][:16], '%Y-%m-%dT%H:%M')
-                                hora_pt = utc_time.strftime('%H:%M')
-                            except:
-                                hora_pt = p['kickoff'][11:16]
-                            
-                            pred_data.append({
-                                'Hora PT': hora_pt,
-                                'Casa': p['home_team'],
-                                'Fora': p['away_team'],
-                                'Liga': p['league'],
-                                'Previsão': p['prediction'],
-                                'Confiança': f"{p['confidence']:.1f}%",
-                                '_confidence': p['confidence']  # Para ordenação
-                            })
-                        
-                        if pred_data:
-                            pred_df = pd.DataFrame(pred_data)
-                            # Ordenar por confiança (decrescente) e remover coluna auxiliar
                             pred_df = pred_df.sort_values('_confidence', ascending=False).drop('_confidence', axis=1)
                             st.dataframe(pred_df, use_container_width=True)
                         else:
@@ -1172,25 +847,17 @@ def main():
     with tab2:
         st.header("📊 Análise de Ligas")
         
-        # Verificar se há modelo carregado
         if 'trained_model' in st.session_state:
             model_data = st.session_state.trained_model
         else:
             model_data = load_latest_model()
         
         if model_data:
-            # Usar o use_cache da sidebar
-            use_cache = True  # Default
-            if 'use_cache' in locals():
-                use_cache = use_cache
-                
-            # Carregar dados históricos para análise
-            df = collect_historical_data(days=15, use_cached=use_cache)
+            df = collect_historical_data(days=15, use_cached=True)
             
             if not df.empty:
                 league_analysis = analyze_leagues(df)
                 
-                # Separar por tendência
                 over_leagues = {k: v for k, v in league_analysis.items() if v['trend'] == 'OVER'}
                 under_leagues = {k: v for k, v in league_analysis.items() if v['trend'] == 'UNDER'}
                 
@@ -1234,7 +901,6 @@ def main():
         - **15%** para teste final
         """)
         
-        # Botão de teste de API
         if st.button("🔌 Testar Conexão API", type="secondary"):
             with st.spinner("Testando conexão..."):
                 headers = get_api_headers()
@@ -1254,7 +920,6 @@ def main():
                             st.success("✅ API conectada com sucesso!")
                             response_data = data['response']
                             
-                            # Mostrar informações da conta
                             if 'account' in response_data:
                                 st.info(f"👤 Conta: {response_data['account'].get('firstname', '')} {response_data['account'].get('lastname', '')}")
                             
@@ -1283,28 +948,24 @@ def main():
                     st.error(f"❌ Erro de conexão: {str(e)}")
         
         if st.button("🚀 Iniciar Treinamento", type="primary"):
-            # Coletar dados
             with st.spinner(f"📊 Coletando {days_training} dias de dados históricos..."):
                 df = collect_historical_data(days=days_training, use_cached=use_cache)
             
             if df.empty:
                 st.error("❌ Não foi possível coletar dados")
                 
-                # Teste manual
                 st.info("🔍 Testando busca de dados...")
                 test_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
                 test_fixtures = get_fixtures(test_date)
-                
+                st.write(f"Jogos encontrados para {test_date}: {len(test_fixtures)}")
             else:
                 st.success(f"✅ {len(df)} jogos coletados")
                 
-                # Treinar modelo
                 with st.spinner("🧠 Treinando modelos de Machine Learning..."):
                     model_data, results = train_ml_model(df)
                 
                 st.success("✅ Modelo treinado com sucesso!")
                 
-                # Mostrar resultados
                 st.subheader("📊 Resultados do Treinamento")
                 
                 for model_name, metrics in results.items():
@@ -1321,7 +982,6 @@ def main():
                     with col5:
                         st.metric("F1-Score", f"{metrics['f1_score']:.1%}")
                 
-                # Análise de features importantes
                 if hasattr(model_data['model'], 'feature_importances_'):
                     st.subheader("🎯 Features Mais Importantes")
                     
@@ -1335,7 +995,6 @@ def main():
     with tab4:
         st.header("📈 Performance do Modelo")
         
-        # Verificar se há modelo carregado
         if 'trained_model' in st.session_state:
             model_data = st.session_state.trained_model
         else:
@@ -1344,7 +1003,6 @@ def main():
         if model_data and 'results' in model_data:
             results = model_data['results']
             
-            # Melhor modelo
             best_model_name = max(results.items(), key=lambda x: x[1]['f1_score'])[0]
             best_metrics = results[best_model_name]
             
@@ -1388,7 +1046,6 @@ def main():
                 </div>
                 """, unsafe_allow_html=True)
             
-            # Taxa de acerto histórica
             st.subheader("📊 Performance Histórica do Modelo")
             
             if 'total_samples' in model_data:
@@ -1422,7 +1079,6 @@ def main():
                     </div>
                     """, unsafe_allow_html=True)
             
-            # Explicação das métricas
             with st.expander("📚 Entenda as Métricas"):
                 st.write("""
                 - **Acurácia**: Percentual total de acertos do modelo
@@ -1432,7 +1088,6 @@ def main():
                 - **Taxa de Acerto**: Percentual de previsões corretas no conjunto de teste
                 """)
             
-            # Informações do modelo
             st.subheader("ℹ️ Informações do Modelo")
             st.info(f"""
             - **Data de Treinamento**: {model_data['training_date']}
