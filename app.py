@@ -397,9 +397,12 @@ def prepare_ml_features(df):
     return pd.DataFrame(features), team_stats
 
 def train_ml_model(df):
-    """Treina o modelo de ML"""
+    """Treina o modelo de ML com análise por liga"""
     # Preparar features
     features_df, team_stats = prepare_ml_features(df)
+    
+    # Adicionar análise por liga
+    league_analysis = analyze_leagues(df)
     
     # Separar features e target
     feature_cols = [col for col in features_df.columns if col != 'target']
@@ -418,14 +421,27 @@ def train_ml_model(df):
     
     # Treinar múltiplos modelos
     models = {
-        'RandomForest': RandomForestClassifier(n_estimators=100, random_state=42, n_jobs=-1),
-        'GradientBoosting': GradientBoostingClassifier(n_estimators=100, random_state=42)
+        'RandomForest': RandomForestClassifier(
+            n_estimators=200, 
+            max_depth=10,
+            min_samples_split=5,
+            random_state=42, 
+            n_jobs=-1
+        ),
+        'GradientBoosting': GradientBoostingClassifier(
+            n_estimators=200,
+            learning_rate=0.1,
+            max_depth=5,
+            random_state=42
+        )
     }
     
     best_model = None
     best_score = 0
     results = {}
     
+    # Treinar e validar cada modelo
+    st.info("🧠 Treinando modelos de ML...")
     for name, model in models.items():
         # Treinar
         model.fit(X_train_scaled, y_train)
@@ -449,6 +465,8 @@ def train_ml_model(df):
             'f1_score': test_f1
         }
         
+        st.success(f"✅ {name}: F1-Score = {test_f1:.1%}")
+        
         if test_f1 > best_score:
             best_score = test_f1
             best_model = model
@@ -459,9 +477,11 @@ def train_ml_model(df):
         'scaler': scaler,
         'feature_cols': feature_cols,
         'team_stats': team_stats,
+        'league_analysis': league_analysis,  # Adicionar análise por liga
         'results': results,
         'training_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-        'total_samples': len(df)
+        'total_samples': len(df),
+        'training_days': len(df['date'].unique()) if 'date' in df.columns else 0
     }
     
     # Salvar no session state
@@ -499,7 +519,7 @@ def load_latest_model():
     return None
 
 def predict_matches(fixtures, model_data):
-    """Faz previsões para os jogos do dia"""
+    """Faz previsões para os jogos do dia com análise por liga"""
     predictions = []
     
     if not model_data:
@@ -509,6 +529,7 @@ def predict_matches(fixtures, model_data):
     scaler = model_data['scaler']
     feature_cols = model_data['feature_cols']
     team_stats = model_data['team_stats']
+    league_analysis = model_data.get('league_analysis', {})
     
     for fixture in fixtures:
         # Apenas jogos não iniciados
@@ -518,6 +539,7 @@ def predict_matches(fixtures, model_data):
         try:
             home_id = fixture['teams']['home']['id']
             away_id = fixture['teams']['away']['id']
+            league_name = fixture['league']['name']
             
             # Verificar se temos dados dos times
             if home_id not in team_stats or away_id not in team_stats:
@@ -527,6 +549,10 @@ def predict_matches(fixtures, model_data):
             home_stats = team_stats[home_id]
             away_stats = team_stats[away_id]
             
+            # Taxa da liga
+            league_info = league_analysis.get(league_name, {})
+            league_over_rate = league_info.get('over_rate', 0.5)
+            
             features = {
                 'home_over_rate': home_stats['over_05'] / max(home_stats['games'], 1),
                 'home_avg_goals': home_stats['goals_scored'] / max(home_stats['games'], 1),
@@ -534,7 +560,7 @@ def predict_matches(fixtures, model_data):
                 'away_over_rate': away_stats['over_05'] / max(away_stats['games'], 1),
                 'away_avg_goals': away_stats['goals_scored'] / max(away_stats['games'], 1),
                 'away_away_over_rate': away_stats['away_over'] / max(away_stats['away_games'], 1),
-                'league_over_rate': 0.5,  # Média geral
+                'league_over_rate': league_over_rate,
                 'combined_over_rate': 0,
                 'combined_goals': 0
             }
@@ -551,11 +577,19 @@ def predict_matches(fixtures, model_data):
             pred_class = model.predict(X_scaled)[0]
             confidence = max(pred_proba) * 100
             
+            # Ajuste baseado na tendência da liga
+            league_trend = league_info.get('trend', 'BALANCED')
+            if league_trend == 'OVER' and pred_class == 1:
+                confidence = min(confidence * 1.05, 95)  # Boost de 5% para ligas OVER
+            elif league_trend == 'UNDER' and pred_class == 1:
+                confidence = confidence * 0.95  # Redução de 5% para ligas UNDER
+            
             prediction = {
                 'fixture': fixture,
                 'home_team': fixture['teams']['home']['name'],
                 'away_team': fixture['teams']['away']['name'],
-                'league': fixture['league']['name'],
+                'league': league_name,
+                'league_trend': league_trend,
                 'country': fixture['league']['country'],
                 'kickoff': fixture['fixture']['date'],
                 'prediction': 'OVER 0.5' if pred_class == 1 else 'UNDER 0.5',
@@ -789,8 +823,11 @@ def main():
                     
                     # Todas as previsões
                     with st.expander("📋 Ver Todas as Previsões"):
+                        # Filtrar apenas OVER 0.5 para a tabela também
+                        over_predictions = [p for p in predictions if p['prediction'] == 'OVER 0.5']
+                        
                         pred_data = []
-                        for p in predictions:
+                        for p in over_predictions:
                             try:
                                 utc_time = datetime.strptime(p['kickoff'][:16], '%Y-%m-%dT%H:%M')
                                 hora_pt = utc_time.strftime('%H:%M')
@@ -807,11 +844,13 @@ def main():
                                 '_confidence': p['confidence']  # Para ordenação
                             })
                         
-                        pred_df = pd.DataFrame(pred_data)
-                        # Ordenar por confiança (decrescente) e remover coluna auxiliar
-                        pred_df = pred_df.sort_values('_confidence', ascending=False).drop('_confidence', axis=1)
-                        
-                        st.dataframe(pred_df, use_container_width=True)
+                        if pred_data:
+                            pred_df = pd.DataFrame(pred_data)
+                            # Ordenar por confiança (decrescente) e remover coluna auxiliar
+                            pred_df = pred_df.sort_values('_confidence', ascending=False).drop('_confidence', axis=1)
+                            st.dataframe(pred_df, use_container_width=True)
+                        else:
+                            st.info("Nenhuma previsão OVER 0.5 encontrada")
                 
                 else:
                     st.info("🤷 Nenhuma previsão disponível (times sem dados históricos)")
