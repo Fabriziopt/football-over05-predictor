@@ -804,137 +804,6 @@ def get_prediction_context(pred, league_context):
         else:
             return "🤔 Under com reservas"
 
-def display_prediction_card_clean(pred, index):
-    """Exibe card de previsão usando componentes nativos do Streamlit"""
-    try:
-        utc_time = datetime.strptime(pred['kickoff'][:16], '%Y-%m-%dT%H:%M')
-        hora_portugal = utc_time.strftime('%H:%M')
-    except Exception:
-        hora_portugal = pred['kickoff'][11:16]
-    
-    league_context = get_league_context(pred['league'])
-    
-    # Determinar cor da confiança
-    if pred['confidence'] > 80:
-        confidence_color = "🟢"
-        confidence_label = "Alta"
-    elif pred['confidence'] > 65:
-        confidence_color = "🔵"
-        confidence_label = "Boa"
-    else:
-        confidence_color = "🟡"
-        confidence_label = "Média"
-    
-    prediction_context = get_prediction_context(pred, league_context)
-    
-    diff = pred['confidence'] - league_context['league_avg']
-    diff_text = f"+{diff:.0f}%" if diff > 0 else f"{diff:.0f}%"
-    
-    # Usar container e colunas do Streamlit
-    with st.container():
-        # Criar um expander estilizado para cada previsão
-        with st.expander(f"⚽ **{pred['home_team']} vs {pred['away_team']}** - {confidence_color} {pred['confidence']:.0f}%", expanded=True):
-            
-            # Informações do jogo
-            col1, col2 = st.columns([2, 1])
-            
-            with col1:
-                st.write(f"🏆 **Liga:** {pred['league']} ({pred['country']})")
-                st.write(f"🕐 **Horário:** {hora_portugal}")
-            
-            with col2:
-                st.metric(
-                    label="Confiança",
-                    value=f"{pred['confidence']:.0f}%",
-                    delta=confidence_label
-                )
-            
-            st.divider()
-            
-            # Previsão principal
-            st.write(f"### 🎯 Previsão ML: **{pred['prediction']}**")
-            
-            # Contexto em colunas
-            col1, col2, col3 = st.columns(3)
-            
-            with col1:
-                st.metric(
-                    label="📊 Liga (média)",
-                    value=f"{league_context['league_avg']:.0f}%"
-                )
-            
-            with col2:
-                st.metric(
-                    label="📈 Vs Liga",
-                    value=diff_text,
-                    delta=None
-                )
-            
-            with col3:
-                st.write("**💡 Análise**")
-                st.write(prediction_context)
-            
-            # Features avançadas (se disponíveis)
-            if 'advanced_features' in pred:
-                st.divider()
-                st.write("**🧠 Features Avançadas:**")
-                
-                adv = pred['advanced_features']
-                col1, col2, col3 = st.columns(3)
-                
-                with col1:
-                    consistency = (adv.get('home_consistency', 0.5) + adv.get('away_consistency', 0.5)) / 2
-                    st.metric("Consistência", f"{consistency:.2f}")
-                
-                with col2:
-                    momentum = (adv.get('home_momentum', 0) + adv.get('away_momentum', 0)) / 2
-                    st.metric("Momentum", f"{momentum:.1%}")
-                
-                with col3:
-                    combined = adv.get('combined_score', 0)
-                    st.metric("Score Combinado", f"{combined:.2f}")
-
-def display_all_games_list_simple(predictions):
-    """Exibe lista de todos os jogos usando componentes nativos"""
-    if not predictions:
-        return
-    
-    st.markdown("### 📋 Todos os Jogos do Dia")
-    
-    # Criar DataFrame para exibição
-    games_data = []
-    
-    for pred in predictions:
-        try:
-            utc_time = datetime.strptime(pred['kickoff'][:16], '%Y-%m-%dT%H:%M')
-            hora = utc_time.strftime('%H:%M')
-        except Exception:
-            hora = pred['kickoff'][11:16]
-        
-        prediction_icon = "🟢" if pred['prediction'] == 'OVER 0.5' else "🔴"
-        
-        games_data.append({
-            'Hora': hora,
-            'Jogo': f"{pred['home_team']} vs {pred['away_team']}",
-            'Liga': pred['league'],
-            'Previsão': f"{prediction_icon} {pred['prediction']}",
-            'Confiança': f"{pred['confidence']:.0f}%"
-        })
-    
-    # Exibir como tabela
-    df_games = pd.DataFrame(games_data)
-    st.dataframe(
-        df_games,
-        use_container_width=True,
-        hide_index=True,
-        column_config={
-            "Confiança": st.column_config.TextColumn(
-                "Confiança",
-                help="Confiança da previsão"
-            ),
-        }
-    )
-
 def predict_matches(fixtures, model_data):
     """Faz previsões para os jogos do dia usando features avançadas"""
     predictions = []
@@ -1266,11 +1135,57 @@ def main():
                     
                     if best_bets:
                         for i, pred in enumerate(best_bets[:5]):
-                            display_prediction_card_clean(pred, i)
+                            # Criar card bonito sem HTML
+                            with st.container():
+                                # Badge de confiança no canto
+                                col1, col2 = st.columns([4, 1])
+                                
+                                with col1:
+                                    st.subheader(f"⚽ {pred['home_team']} vs {pred['away_team']}")
+                                
+                                with col2:
+                                    if pred['confidence'] > 80:
+                                        st.success(f"{pred['confidence']:.1f}%")
+                                    elif pred['confidence'] > 65:
+                                        st.info(f"{pred['confidence']:.1f}%")
+                                    else:
+                                        st.warning(f"{pred['confidence']:.1f}%")
+                                
+                                # Info do jogo
+                                liga_info = f"🏆 **Liga:** {pred['league']} ({pred['country']})"
+                                hora = pred['kickoff'][11:16]
+                                st.write(f"{liga_info} | 🕐 **Horário PT:** {hora}")
+                                
+                                # Previsão
+                                st.info(f"🎯 **Previsão ML:** {pred['prediction']}")
+                                
+                                st.markdown("---")
                     else:
                         st.info("🤷 Nenhuma aposta OVER 0.5 com boa confiança encontrada hoje")
                     
-                    display_all_games_list_simple(predictions)
+                    # Lista completa de jogos
+                    st.subheader("📋 Todos os Jogos do Dia")
+                    
+                    # Criar DataFrame para todos os jogos
+                    all_games_data = []
+                    for pred in predictions:
+                        try:
+                            utc_time = datetime.strptime(pred['kickoff'][:16], '%Y-%m-%dT%H:%M')
+                            hora = utc_time.strftime('%H:%M')
+                        except:
+                            hora = pred['kickoff'][11:16]
+                        
+                        all_games_data.append({
+                            'Hora': hora,
+                            'Jogo': f"{pred['home_team']} vs {pred['away_team']}",
+                            'Liga': pred['league'],
+                            'Previsão': pred['prediction'],
+                            'Confiança': f"{pred['confidence']:.0f}%"
+                        })
+                    
+                    # Exibir como tabela
+                    df_all = pd.DataFrame(all_games_data)
+                    st.dataframe(df_all, use_container_width=True, hide_index=True)
                 
                 else:
                     st.info("🤷 Nenhuma previsão disponível (times sem dados históricos)")
