@@ -101,11 +101,27 @@ def get_fixtures(date_str):
             timeout=20
         )
         
+        # Debug
+        st.write(f"Debug - Status Code: {response.status_code}")
+        
         if response.status_code == 200:
             data = response.json()
-            return data.get('response', [])
+            
+            # Verificar se há erros na resposta
+            if 'errors' in data and data['errors']:
+                st.error(f"Erro da API: {data['errors']}")
+                return []
+            
+            fixtures = data.get('response', [])
+            st.write(f"Debug - Fixtures encontradas: {len(fixtures)}")
+            return fixtures
         else:
             st.error(f"Erro API: {response.status_code}")
+            try:
+                error_data = response.json()
+                st.error(f"Detalhes: {error_data}")
+            except:
+                st.error(f"Resposta: {response.text}")
             return []
     except Exception as e:
         st.error(f"Erro de conexão: {str(e)}")
@@ -647,6 +663,29 @@ def main():
         - **15%** para teste final
         """)
         
+        # Botão de teste de API
+        if st.button("🔌 Testar Conexão API", type="secondary"):
+            with st.spinner("Testando conexão..."):
+                headers = {
+                    'x-apisports-key': API_KEY
+                }
+                try:
+                    response = requests.get(
+                        'https://v3.football.api-sports.io/status',
+                        headers=headers,
+                        timeout=10
+                    )
+                    st.write(f"Status Code: {response.status_code}")
+                    if response.status_code == 200:
+                        data = response.json()
+                        st.success("✅ API conectada!")
+                        st.json(data)
+                    else:
+                        st.error(f"❌ Erro: {response.status_code}")
+                        st.text(response.text)
+                except Exception as e:
+                    st.error(f"❌ Erro: {str(e)}")
+        
         if st.button("🚀 Iniciar Treinamento", type="primary"):
             # Coletar dados
             with st.spinner(f"📊 Coletando {days_training} dias de dados históricos..."):
@@ -654,6 +693,12 @@ def main():
             
             if df.empty:
                 st.error("❌ Não foi possível coletar dados")
+                
+                # Teste manual
+                st.info("🔍 Testando busca de dados...")
+                test_date = (datetime.now() - timedelta(days=1)).strftime('%Y-%m-%d')
+                test_fixtures = get_fixtures(test_date)
+                
             else:
                 st.success(f"✅ {len(df)} jogos coletados")
                 
