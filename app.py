@@ -110,34 +110,34 @@ def get_fixtures(date_str):
 def check_api_status():
     """Verifica o status e limites da API"""
     headers = get_api_headers()
-    base_url = get_api_base_url()
     
     try:
         response = requests.get(
-            f'{base_url}/status',
+            f'{API_BASE_URL}/status',
             headers=headers,
             timeout=10
         )
         
         if response.status_code == 200:
             data = response.json()
-            if 'response' in data and isinstance(data['response'], dict):
+            if 'response' in data:
                 status = data['response']
+                account = status.get('account', {})
+                subscription = status.get('subscription', {})
                 requests_info = status.get('requests', {})
-                if isinstance(requests_info, dict):
-                    limit_day = requests_info.get('limit_day', 0)
-                    current = requests_info.get('current', 0)
-                    requests_remaining = limit_day - current
-                    return True, requests_remaining, status
-            elif 'errors' in data:
-                if isinstance(data['errors'], dict):
-                    error_msg = data['errors'].get('token', 'Unknown error')
-                elif isinstance(data['errors'], list) and data['errors']:
-                    error_msg = data['errors'][0] if data['errors'] else 'Unknown error'
-                else:
-                    error_msg = str(data['errors'])
+                
+                requests_remaining = requests_info.get('limit_day', 0) - requests_info.get('current', 0)
+                
+                return True, requests_remaining, {
+                    'account': account,
+                    'subscription': subscription,
+                    'requests': requests_info
+                }
+            elif 'errors' in data and data['errors']:
+                error_msg = str(data['errors'])
                 return False, 0, error_msg
-        return False, 0, f"Status Code: {response.status_code}"
+        else:
+            return False, 0, f"Status Code: {response.status_code}"
     except Exception as e:
         return False, 0, str(e)
 
@@ -250,6 +250,8 @@ def collect_historical_data(days=30):
     all_data = []
     progress_bar = st.progress(0)
     status_text = st.empty()
+    
+    headers = get_api_headers()
     
     for i in range(days):
         date = datetime.now() - timedelta(days=i+1)
@@ -806,52 +808,50 @@ def main():
         # Botão de teste de API
         if st.button("🔌 Testar Conexão API", type="secondary"):
             with st.spinner("Testando conexão..."):
-                # Mostrar informações de debug
-                st.write(f"API Key length: {len(API_KEY)}")
-                st.write(f"API Key (primeiros/últimos chars): {API_KEY[:5]}...{API_KEY[-5:]}")
-                
-                # Teste 1: API-Football direta
-                st.write("\n**Teste 1: API-Football Direta**")
-                headers1 = {
-                    'x-apisports-key': API_KEY
-                }
+                headers = get_api_headers()
                 
                 try:
-                    # Tentar endpoint da API-Football direta
                     response = requests.get(
-                        'https://api-football-v1.p.rapidapi.com/v3/status',
-                        headers={
-                            'x-rapidapi-key': API_KEY,
-                            'x-rapidapi-host': 'api-football-v1.p.rapidapi.com'
-                        },
+                        f'{API_BASE_URL}/status',
+                        headers=headers,
                         timeout=10
                     )
-                    st.write(f"RapidAPI Status Code: {response.status_code}")
+                    
+                    st.write(f"Status Code: {response.status_code}")
+                    
                     if response.status_code == 200:
-                        st.success("✅ Sua API é do RapidAPI!")
-                        st.json(response.json())
-                        
-                        # Atualizar configuração global
-                        st.warning("⚠️ Detectamos que você está usando RapidAPI. Atualize o código para usar os endpoints corretos.")
-                    else:
-                        # Tentar API-Football direta
-                        response2 = requests.get(
-                            'https://v3.football.api-sports.io/status',
-                            headers=headers1,
-                            timeout=10
-                        )
-                        st.write(f"API-Football Direct Status Code: {response2.status_code}")
-                        if response2.status_code == 200:
-                            st.success("✅ Sua API é da API-Football direta!")
-                            st.json(response2.json())
+                        data = response.json()
+                        if 'response' in data:
+                            st.success("✅ API conectada com sucesso!")
+                            response_data = data['response']
+                            
+                            # Mostrar informações da conta
+                            if 'account' in response_data:
+                                st.info(f"👤 Conta: {response_data['account'].get('firstname', '')} {response_data['account'].get('lastname', '')}")
+                            
+                            if 'subscription' in response_data:
+                                sub = response_data['subscription']
+                                st.info(f"📦 Plano: {sub.get('plan', 'Unknown')}")
+                                st.info(f"📅 Válido até: {sub.get('end', 'Unknown')}")
+                            
+                            if 'requests' in response_data:
+                                req = response_data['requests']
+                                used = req.get('current', 0)
+                                limit = req.get('limit_day', 0)
+                                remaining = limit - used
+                                st.info(f"📊 Requests: {used}/{limit} (Restantes: {remaining})")
                         else:
-                            st.error("❌ Não conseguimos identificar o tipo de API")
-                            if response2.status_code == 200:
-                                st.json(response2.json())
-                            else:
-                                st.error(response2.text)
+                            st.error("❌ Resposta inválida da API")
+                            st.json(data)
+                    else:
+                        st.error(f"❌ Erro: Status {response.status_code}")
+                        try:
+                            st.json(response.json())
+                        except:
+                            st.text(response.text)
+                            
                 except Exception as e:
-                    st.error(f"❌ Erro: {str(e)}")
+                    st.error(f"❌ Erro de conexão: {str(e)}")
         
         if st.button("🚀 Iniciar Treinamento", type="primary"):
             # Coletar dados
