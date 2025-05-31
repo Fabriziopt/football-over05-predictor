@@ -139,6 +139,11 @@ def check_api_status():
                 elif isinstance(data['errors'], dict):
                     error_msg = data['errors'].get('token', str(data['errors']))
                 else:
+                # Fazer previsões
+                with st.spinner("🤖 Aplicando Machine Learning..."):
+                    predictions = predict_matches(fixtures, model_data)
+                
+                if predictions:
                     error_msg = str(data['errors'])
                 return False, 0, error_msg
         else:
