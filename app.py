@@ -898,6 +898,120 @@ def main():
                     fixtures_today = get_fixtures_cached(today_str)
                     st.write(f"Jogos de hoje ({today_str}): {len(fixtures_today)} encontrados")
             else:
+                # Fazer previsões
+                with st.spinner("🤖 Aplicando Machine Learning..."):
+                    predictions = predict_matches(fixtures, model_data)
+                
+                if predictions:
+                    # Métricas resumo
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    total_games = len(predictions)
+                    high_confidence = len([p for p in predictions if p['confidence'] > 70])
+                    over_predictions = len([p for p in predictions if p['prediction'] == 'OVER 0.5'])
+                    avg_confidence = sum([p['confidence'] for p in predictions]) / len(predictions)
+                    
+                    with col1:
+                        st.markdown("""
+                        <div class="metric-card">
+                            <h3>🎮 Total de Jogos</h3>
+                            <h1>{}</h1>
+                        </div>
+                        """.format(total_games), unsafe_allow_html=True)
+                    
+                    with col2:
+                        st.markdown("""
+                        <div class="metric-card">
+                            <h3>🎯 Alta Confiança</h3>
+                            <h1>{}</h1>
+                        </div>
+                        """.format(high_confidence), unsafe_allow_html=True)
+                    
+                    with col3:
+                        st.markdown("""
+                        <div class="metric-card">
+                            <h3>📈 Over 0.5</h3>
+                            <h1>{}</h1>
+                        </div>
+                        """.format(over_predictions), unsafe_allow_html=True)
+                    
+                    with col4:
+                        st.markdown("""
+                        <div class="metric-card">
+                            <h3>💯 Confiança Média</h3>
+                            <h1>{:.1f}%</h1>
+                        </div>
+                        """.format(avg_confidence), unsafe_allow_html=True)
+                    
+                    # Top previsões - ORDENADAS POR CONFIANÇA (MAIOR PARA MENOR)
+                    st.subheader("🏆 Melhores Apostas do Dia")
+                    
+                    # Filtrar apenas OVER 0.5 com alta confiança e ordenar
+                    best_bets = [p for p in predictions if p['prediction'] == 'OVER 0.5' and p['confidence'] > 65]
+                    best_bets.sort(key=lambda x: x['confidence'], reverse=True)  # Maior confiança primeiro
+                    
+                    if best_bets:
+                        for i, pred in enumerate(best_bets[:10]):
+                            # Converter horário UTC para Portugal (UTC+0 no inverno, UTC+1 no verão)
+                            try:
+                                # Parse do horário UTC
+                                utc_time = datetime.strptime(pred['kickoff'][:16], '%Y-%m-%dT%H:%M')
+                                # Adicionar 0 horas (Portugal no inverno) ou 1 hora (verão)
+                                # Por simplicidade, vamos usar UTC+0 (você pode ajustar conforme necessário)
+                                pt_time = utc_time  # Portugal está em UTC+0 no inverno
+                                hora_portugal = pt_time.strftime('%H:%M')
+                            except:
+                                hora_portugal = pred['kickoff'][11:16]
+                            
+                            confidence_class = "accuracy-high" if pred['confidence'] > 75 else "accuracy-medium"
+                            
+                            st.markdown(f"""
+                            <div class="prediction-card">
+                                <h3>⚽ {pred['home_team']} vs {pred['away_team']}</h3>
+                                <p><strong>🏆 Liga:</strong> {pred['league']} ({pred['country']})</p>
+                                <p><strong>🕐 Horário PT:</strong> {hora_portugal}</p>
+                                <hr style="opacity: 0.3;">
+                                <p><strong>🎯 Previsão ML:</strong> {pred['prediction']}</p>
+                                <p><strong>💯 Confiança:</strong> <span class="{confidence_class}">{pred['confidence']:.1f}%</span></p>
+                                <p><strong>📊 Probabilidades:</strong> Over {pred['probability_over']:.1f}% | Under {pred['probability_under']:.1f}%</p>
+                            </div>
+                            """, unsafe_allow_html=True)
+                    else:
+                        st.info("🤷 Nenhuma aposta OVER 0.5 com boa confiança encontrada hoje")
+                    
+                    # Todas as previsões
+                    with st.expander("📋 Ver Todas as Previsões"):
+                        # Filtrar apenas OVER 0.5 para a tabela também
+                        over_predictions = [p for p in predictions if p['prediction'] == 'OVER 0.5']
+                        
+                        pred_data = []
+                        for p in over_predictions:
+                            try:
+                                utc_time = datetime.strptime(p['kickoff'][:16], '%Y-%m-%dT%H:%M')
+                                hora_pt = utc_time.strftime('%H:%M')
+                            except:
+                                hora_pt = p['kickoff'][11:16]
+                            
+                            pred_data.append({
+                                'Hora PT': hora_pt,
+                                'Casa': p['home_team'],
+                                'Fora': p['away_team'],
+                                'Liga': p['league'],
+                                'Previsão': p['prediction'],
+                                'Confiança': f"{p['confidence']:.1f}%",
+                                '_confidence': p['confidence']  # Para ordenação
+                            })
+                        
+                        if pred_data:
+                            pred_df = pd.DataFrame(pred_data)
+                            # Ordenar por confiança (decrescente) e remover coluna auxiliar
+                            pred_df = pred_df.sort_values('_confidence', ascending=False).drop('_confidence', axis=1)
+                            st.dataframe(pred_df, use_container_width=True)
+                        else:
+                            st.info("Nenhuma previsão OVER 0.5 encontrada")
+                
+                else:
+                    st.info("🤷 Nenhuma previsão disponível (times sem dados históricos)")
             # Buscar jogos do dia
             date_str = selected_date.strftime('%Y-%m-%d')
             
