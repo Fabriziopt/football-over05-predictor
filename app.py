@@ -623,27 +623,19 @@ def main():
     with st.sidebar:
         st.title("⚙️ Configurações")
         
-        # Modo demonstração
-        demo_mode = st.checkbox("🎮 Modo Demonstração", help="Usar dados simulados sem gastar API")
+        # Verificar status da API
+        api_ok, requests_left, api_status = check_api_status()
         
-        if not demo_mode:
-            # Verificar status da API
-            api_ok, requests_left, api_status = check_api_status()
-            
-            if not api_ok:
-                st.error("❌ Problema com a API")
-                st.error(f"Erro: {api_status}")
-                st.info("💡 Ative o Modo Demonstração para testar")
-            else:
-                st.success(f"✅ API conectada")
-                if requests_left > 0:
-                    st.info(f"📊 Requests restantes hoje: {requests_left}")
-                else:
-                    st.warning(f"⚠️ Sem requests restantes hoje!")
-                    st.info("💡 A API reseta à meia-noite UTC")
-                    st.info("💡 Use o Modo Demonstração por enquanto")
+        if not api_ok:
+            st.error("❌ Problema com a API")
+            st.error(f"Erro: {api_status}")
         else:
-            st.info("🎮 Modo Demonstração ativo")
+            st.success(f"✅ API conectada")
+            if requests_left > 0:
+                st.info(f"📊 Requests restantes hoje: {requests_left}")
+            else:
+                st.warning(f"⚠️ Sem requests restantes hoje!")
+                st.info("💡 A API reseta à meia-noite UTC")
         
         # Data selecionada
         selected_date = st.date_input(
@@ -668,7 +660,7 @@ def main():
         )
         
         # Status do modelo
-        model_data = st.session_state.trained_model or load_latest_model()
+        model_data = st.session_state.trained_model if 'trained_model' in st.session_state else load_latest_model()
         if model_data:
             st.success("✅ Modelo carregado")
             st.info(f"📅 Treinado em: {model_data['training_date']}")
@@ -694,8 +686,13 @@ def main():
     with tab1:
         st.header(f"🎯 Previsões para {selected_date.strftime('%d/%m/%Y')}")
         
-        # Verificar se há modelo disponível
-        model_data = st.session_state.trained_model or load_latest_model()
+        # Verificar se há modelo disponível - usar session_state primeiro
+        if 'trained_model' in st.session_state:
+            model_data = st.session_state.trained_model
+        else:
+            model_data = load_latest_model()
+            if model_data:
+                st.session_state.trained_model = model_data
         
         if not model_data:
             st.warning("⚠️ Treine um modelo primeiro na aba 'Treinar Modelo'")
@@ -822,9 +819,20 @@ def main():
     with tab2:
         st.header("📊 Análise de Ligas")
         
+        # Verificar se há modelo carregado
+        if 'trained_model' in st.session_state:
+            model_data = st.session_state.trained_model
+        else:
+            model_data = load_latest_model()
+        
         if model_data:
+            # Usar o use_cache da sidebar
+            use_cache = True  # Default
+            if 'use_cache' in locals():
+                use_cache = use_cache
+                
             # Carregar dados históricos para análise
-            df = collect_historical_data(days=15)
+            df = collect_historical_data(days=15, use_cached=use_cache)
             
             if not df.empty:
                 league_analysis = analyze_leagues(df)
@@ -973,6 +981,12 @@ def main():
     
     with tab4:
         st.header("📈 Performance do Modelo")
+        
+        # Verificar se há modelo carregado
+        if 'trained_model' in st.session_state:
+            model_data = st.session_state.trained_model
+        else:
+            model_data = load_latest_model()
         
         if model_data and 'results' in model_data:
             results = model_data['results']
