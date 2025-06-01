@@ -1,778 +1,1663 @@
+import streamlit as st
 import pandas as pd
 import numpy as np
+import requests
 from datetime import datetime, timedelta
+import time
+import joblib
+import os
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+from sklearn.preprocessing import StandardScaler
 import warnings
 warnings.filterwarnings('ignore')
 
-class SmartPredictionSystem:
-    """Sistema de Predição Inteligente com Análise Hierárquica"""
-    
-    def __init__(self):
-        self.league_base_rates = {}
-        self.team_adjustments = {}
-        self.backtesting_results = {}
-        
-        # Parâmetros otimizáveis
-        self.outlier_threshold = 1.5
-        self.recent_weight = 0.3
-        self.consistency_weight = 0.7
-        self.min_games_threshold = 3
-    
-    def detect_outliers(self, goals_series):
-        """Detecta outliers usando IQR method com threshold configurável"""
-        if len(goals_series) < 3:
-            return np.zeros(len(goals_series), dtype=bool)
-        
-        q75 = np.percentile(goals_series, 75)
-        q25 = np.percentile(goals_series, 25)
-        iqr = q75 - q25
-        
-        # Usar threshold configurável
-        lower_bound = q25 - self.outlier_threshold * iqr
-        upper_bound = q75 + self.outlier_threshold * iqr
-        
-        outliers = (goals_series < lower_bound) | (goals_series > upper_bound)
-        return outliers
-    
-    def calculate_realistic_team_stats(self, team_matches, position='home'):
-        """Calcula estatísticas realistas removendo outliers e ponderando recência"""
-        
-        if len(team_matches) == 0:
-            return {
-                'raw_over_rate': 0.5,
-                'adjusted_over_rate': 0.5,
-                'consistency_score': 0.5,
-                'recent_form': 0.5,
-                'scoring_frequency': 0.5,
-                'avg_when_scores': 0.5,
-                'games_count': 0,
-                'outliers_detected': 0
-            }
-        
-        # Determinar coluna de gols baseada na posição
-        goals_col = f'ht_{position}_goals' if position in ['home', 'away'] else 'ht_total_goals'
-        
-        if goals_col not in team_matches.columns:
-            return {
-                'raw_over_rate': 0.5,
-                'adjusted_over_rate': 0.5,
-                'consistency_score': 0.5,
-                'recent_form': 0.5,
-                'scoring_frequency': 0.5,
-                'avg_when_scores': 0.5,
-                'games_count': 0,
-                'outliers_detected': 0
-            }
-        
-        goals_series = team_matches[goals_col].fillna(0)
-        over_05_series = team_matches['over_05'].fillna(0)
-        
-        # 1. Taxa Over 0.5 raw
-        raw_over_rate = over_05_series.mean()
-        
-        # 2. Detectar outliers
-        outliers = self.detect_outliers(goals_series)
-        
-        # 3. Remover outliers para cálculo ajustado
-        clean_goals = goals_series[~outliers] if outliers.sum() > 0 else goals_series
-        clean_over = over_05_series[~outliers] if outliers.sum() > 0 else over_05_series
-        
-        adjusted_over_rate = clean_over.mean() if len(clean_over) > 0 else raw_over_rate
-        
-        # 4. Análise de consistência com peso configurável
-        consistency_score = (1 / (1 + np.std(clean_over) + 0.1)) * self.consistency_weight
-        
-        # 5. Forma recente (últimos 5 jogos) com peso configurável
-        recent_games = over_05_series.tail(5)
-        recent_form = recent_games.mean() if len(recent_games) > 0 else adjusted_over_rate
-        
-        # 6. Frequência de marcar
-        games_with_goals = len(goals_series[goals_series > 0])
-        scoring_frequency = games_with_goals / len(goals_series) if len(goals_series) > 0 else 0
-        
-        # 7. Média quando marca
-        goals_when_scores = goals_series[goals_series > 0]
-        avg_when_scores = goals_when_scores.mean() if len(goals_when_scores) > 0 else 0
-        
-        return {
-            'raw_over_rate': raw_over_rate,
-            'adjusted_over_rate': adjusted_over_rate,
-            'consistency_score': consistency_score,
-            'recent_form': recent_form,
-            'scoring_frequency': scoring_frequency,
-            'avg_when_scores': avg_when_scores,
-            'games_count': len(team_matches),
-            'outliers_detected': outliers.sum()
-        }
-    
-    def analyze_league(self, league_data):
-        """
-        ETAPA 1: Análise da Liga
-        Estabelece a taxa base da liga
-        """
-        if len(league_data) == 0:
-            return {'base_rate': 0.5, 'volatility': 0.5, 'games_count': 0, 'seasonal_trend': 0}
-        
-        # Taxa base da liga
-        base_rate = league_data['over_05'].mean()
-        
-        # Volatilidade da liga (algumas ligas são mais previsíveis)
-        volatility = np.std(league_data['over_05'])
-        
-        # Padrões sazonais (início vs final de temporada)
-        if 'date' in league_data.columns:
-            league_data['date'] = pd.to_datetime(league_data['date'], errors='coerce')
-            recent_data = league_data.tail(int(len(league_data) * 0.3))  # Últimos 30%
-            recent_rate = recent_data['over_05'].mean()
-            seasonal_trend = recent_rate - base_rate
-        else:
-            seasonal_trend = 0
-        
-        return {
-            'base_rate': base_rate,
-            'volatility': volatility,
-            'seasonal_trend': seasonal_trend,
-            'games_count': len(league_data)
-        }
-    
-    def analyze_teams(self, home_team_data, away_team_data):
-        """
-        ETAPA 2: Análise dos Times
-        Calcula ajustes baseados no histórico dos times
-        """
-        
-        # Analisar time da casa
-        home_stats = self.calculate_realistic_team_stats(home_team_data, 'home')
-        
-        # Analisar time de fora  
-        away_stats = self.calculate_realistic_team_stats(away_team_data, 'away')
-        
-        # Calcular ajustes com pesos configuráveis
-        home_adjustment = (home_stats['adjusted_over_rate'] - 0.5) * home_stats['consistency_score']
-        away_adjustment = (away_stats['adjusted_over_rate'] - 0.5) * away_stats['consistency_score']
-        
-        # Forma recente tem peso extra configurável
-        home_recent_adj = (home_stats['recent_form'] - home_stats['adjusted_over_rate']) * self.recent_weight
-        away_recent_adj = (away_stats['recent_form'] - away_stats['adjusted_over_rate']) * self.recent_weight
-        
-        return {
-            'home_stats': home_stats,
-            'away_stats': away_stats,
-            'home_adjustment': home_adjustment + home_recent_adj,
-            'away_adjustment': away_adjustment + away_recent_adj,
-            'combined_adjustment': (home_adjustment + away_adjustment + home_recent_adj + away_recent_adj) / 2
-        }
-    
-    def analyze_match_context(self, home_stats, away_stats, league_analysis):
-        """
-        ETAPA 3: Análise do Contexto do Jogo
-        Fatores específicos do confronto
-        """
-        
-        # Head-to-head seria aqui (se disponível)
-        h2h_adjustment = 0  # Placeholder
-        
-        # Motivação/contexto (posição na tabela, etc.)
-        motivation_adjustment = 0  # Placeholder
-        
-        # Estilo de jogo compatibilidade
-        # Times ofensivos vs defensivos
-        home_attack_style = home_stats['scoring_frequency']
-        away_defense_style = 1 - away_stats['scoring_frequency']
-        
-        style_compatibility = (home_attack_style + away_defense_style) / 2 - 0.5
-        
-        return {
-            'h2h_adjustment': h2h_adjustment,
-            'motivation_adjustment': motivation_adjustment,
-            'style_compatibility': style_compatibility,
-            'final_context_adjustment': (h2h_adjustment + motivation_adjustment + style_compatibility) / 3
-        }
-    
-    def predict_match(self, league_data, home_team_data, away_team_data):
-        """
-        Sistema Hierárquico Completo de Predição
-        """
-        
-        # ETAPA 1: Análise da Liga
-        league_analysis = self.analyze_league(league_data)
-        base_probability = league_analysis['base_rate']
-        
-        # ETAPA 2: Análise dos Times
-        team_analysis = self.analyze_teams(home_team_data, away_team_data)
-        team_adjustment = team_analysis['combined_adjustment']
-        
-        # ETAPA 3: Análise do Contexto
-        context_analysis = self.analyze_match_context(
-            team_analysis['home_stats'], 
-            team_analysis['away_stats'], 
-            league_analysis
-        )
-        context_adjustment = context_analysis['final_context_adjustment']
-        
-        # ETAPA 4: Cálculo Final
-        # Base da liga + ajustes dos times + contexto do jogo
-        final_probability = base_probability + team_adjustment + context_adjustment
-        
-        # Manter entre 0 e 1
-        final_probability = max(0.05, min(0.95, final_probability))
-        
-        # Convertir para porcentagem
-        confidence_percentage = final_probability * 100
-        
-        return {
-            'final_probability': final_probability,
-            'confidence_percentage': confidence_percentage,
-            'breakdown': {
-                'league_base': base_probability * 100,
-                'team_adjustment': team_adjustment * 100,
-                'context_adjustment': context_adjustment * 100,
-                'final': confidence_percentage
-            },
-            'analysis_details': {
-                'league': league_analysis,
-                'teams': team_analysis,
-                'context': context_analysis
-            }
-        }
+# Configuração da página
+st.set_page_config(
+    page_title="⚽ HT Goals AI Engine",
+    page_icon="🤖",
+    layout="wide"
+)
 
-class BacktestingEngine:
-    """Engine para testar performance histórica com 365 dias e divisão train/val/test"""
-    
-    def __init__(self, prediction_system):
-        self.prediction_system = prediction_system
-        self.results = []
-        self.training_history = []
-    
-    def split_temporal_data(self, historical_data, train_days=240, val_days=60, test_days=65):
-        """
-        Divisão temporal dos dados (365 dias total):
-        - Train: 240 dias (65.8%) - Para treinar o sistema
-        - Validation: 60 dias (16.4%) - Para ajustar parâmetros  
-        - Test: 65 dias (17.8%) - Para avaliar performance final
-        """
-        
-        if 'date' not in historical_data.columns:
-            raise ValueError("Dados históricos devem ter coluna 'date'")
-        
-        # Ordenar por data
-        historical_data['date'] = pd.to_datetime(historical_data['date'], errors='coerce')
-        historical_data = historical_data.sort_values('date').reset_index(drop=True)
-        
-        # Calcular datas de corte
-        max_date = historical_data['date'].max()
-        
-        test_start = max_date - timedelta(days=test_days)
-        val_start = test_start - timedelta(days=val_days)
-        train_start = val_start - timedelta(days=train_days)
-        
-        # Filtrar apenas últimos 365 dias
-        cutoff_date = max_date - timedelta(days=365)
-        recent_data = historical_data[historical_data['date'] >= cutoff_date].copy()
-        
-        # Dividir dados
-        train_data = recent_data[
-            (recent_data['date'] >= train_start) & 
-            (recent_data['date'] < val_start)
-        ].copy()
-        
-        val_data = recent_data[
-            (recent_data['date'] >= val_start) & 
-            (recent_data['date'] < test_start)
-        ].copy()
-        
-        test_data = recent_data[
-            recent_data['date'] >= test_start
-        ].copy()
-        
-        return {
-            'train': train_data,
-            'validation': val_data, 
-            'test': test_data,
-            'split_info': {
-                'train_period': f"{train_start.strftime('%Y-%m-%d')} to {val_start.strftime('%Y-%m-%d')}",
-                'val_period': f"{val_start.strftime('%Y-%m-%d')} to {test_start.strftime('%Y-%m-%d')}",
-                'test_period': f"{test_start.strftime('%Y-%m-%d')} to {max_date.strftime('%Y-%m-%d')}",
-                'train_games': len(train_data),
-                'val_games': len(val_data),
-                'test_games': len(test_data)
-            }
-        }
-    
-    def optimize_parameters(self, train_data, val_data):
-        """
-        Otimiza parâmetros do sistema usando dados de validação
-        """
-        
-        best_accuracy = 0
-        best_params = {
-            'outlier_threshold': 1.5,
-            'recent_weight': 0.3,
-            'consistency_weight': 0.7,
-            'min_games_threshold': 3
-        }
-        
-        # Grid search para otimizar parâmetros
-        outlier_thresholds = [1.0, 1.5, 2.0]
-        recent_weights = [0.2, 0.3, 0.4]
-        consistency_weights = [0.6, 0.7, 0.8]
-        min_games = [3, 5, 7]
-        
-        optimization_results = []
-        
-        print("🔧 Testando combinações de parâmetros...")
-        total_combinations = len(outlier_thresholds) * len(recent_weights) * len(consistency_weights) * len(min_games)
-        current_combination = 0
-        
-        for outlier_thresh in outlier_thresholds:
-            for recent_w in recent_weights:
-                for consist_w in consistency_weights:
-                    for min_g in min_games:
-                        current_combination += 1
-                        
-                        if current_combination % 20 == 0:
-                            print(f"   Progresso: {current_combination}/{total_combinations}")
-                        
-                        # Testar estes parâmetros
-                        temp_system = SmartPredictionSystem()
-                        temp_system.outlier_threshold = outlier_thresh
-                        temp_system.recent_weight = recent_w
-                        temp_system.consistency_weight = consist_w
-                        temp_system.min_games_threshold = min_g
-                        
-                        # Avaliar no conjunto de validação
-                        val_accuracy = self.evaluate_on_dataset(temp_system, train_data, val_data)
-                        
-                        optimization_results.append({
-                            'outlier_threshold': outlier_thresh,
-                            'recent_weight': recent_w,
-                            'consistency_weight': consist_w,
-                            'min_games_threshold': min_g,
-                            'val_accuracy': val_accuracy
-                        })
-                        
-                        if val_accuracy > best_accuracy:
-                            best_accuracy = val_accuracy
-                            best_params = {
-                                'outlier_threshold': outlier_thresh,
-                                'recent_weight': recent_w,
-                                'consistency_weight': consist_w,
-                                'min_games_threshold': min_g
-                            }
-        
-        return best_params, best_accuracy, optimization_results
-    
-    def evaluate_on_dataset(self, system, train_data, eval_data):
-        """Avalia sistema em um conjunto de dados"""
-        
-        predictions = []
-        actuals = []
-        
-        # Agrupar por liga para eficiência
-        leagues = eval_data['league_id'].unique()
-        
-        for league_id in leagues:
-            league_train = train_data[train_data['league_id'] == league_id]
-            league_eval = eval_data[eval_data['league_id'] == league_id]
-            
-            if len(league_train) < 20:  # Mínimo para treinamento
-                continue
-            
-            # Para cada jogo de avaliação
-            for idx, match in league_eval.iterrows():
-                try:
-                    # Dados dos times até a data do jogo
-                    match_date = match['date']
-                    historical_until_match = league_train[league_train['date'] < match_date]
-                    
-                    if len(historical_until_match) < 10:
-                        continue
-                    
-                    # Dados específicos dos times
-                    home_team_data = historical_until_match[
-                        historical_until_match['home_team_id'] == match['home_team_id']
-                    ]
-                    away_team_data = historical_until_match[
-                        historical_until_match['away_team_id'] == match['away_team_id']
-                    ]
-                    
-                    if len(home_team_data) < system.min_games_threshold or \
-                       len(away_team_data) < system.min_games_threshold:
-                        continue
-                    
-                    # Fazer predição
-                    prediction = system.predict_match(
-                        historical_until_match, home_team_data, away_team_data
-                    )
-                    
-                    # Comparar com resultado real
-                    predicted_class = prediction['final_probability'] > 0.5
-                    actual_class = match['over_05'] == 1
-                    
-                    predictions.append(predicted_class)
-                    actuals.append(actual_class)
-                    
-                except Exception as e:
-                    continue
-        
-        # Calcular acurácia
-        if len(predictions) > 0:
-            accuracy = accuracy_score(actuals, predictions)
-            return accuracy
-        
-        return 0.0
-    
-    def run_comprehensive_backtest(self, historical_data):
-        """
-        Executa backtesting completo com 365 dias:
-        1. Split train/val/test
-        2. Otimização de parâmetros 
-        3. Avaliação final
-        4. Análise detalhada
-        """
-        
-        print("🚀 Iniciando Backtesting Completo de 365 dias...")
-        
-        # 1. Dividir dados temporalmente
-        print("📊 Dividindo dados em Train/Validation/Test...")
-        data_split = self.split_temporal_data(historical_data)
-        
-        train_data = data_split['train']
-        val_data = data_split['validation']
-        test_data = data_split['test']
-        
-        print(f"✅ Train: {len(train_data)} jogos | Val: {len(val_data)} jogos | Test: {len(test_data)} jogos")
-        
-        # 2. Otimizar parâmetros usando train+validation
-        print("🔧 Otimizando parâmetros do sistema...")
-        best_params, best_val_acc, optimization_results = self.optimize_parameters(train_data, val_data)
-        
-        print(f"✅ Melhor acurácia validação: {best_val_acc:.1%}")
-        print(f"✅ Melhores parâmetros: {best_params}")
-        
-        # 3. Aplicar melhores parâmetros ao sistema
-        optimized_system = SmartPredictionSystem()
-        for param, value in best_params.items():
-            setattr(optimized_system, param, value)
-        
-        # 4. Avaliação final no conjunto de teste
-        print("🎯 Avaliação final no conjunto de teste...")
-        test_results = self.detailed_evaluation(optimized_system, train_data, val_data, test_data)
-        
-        # 5. Análise por faixas de confiança
-        confidence_analysis = self.analyze_by_confidence_ranges(test_results['detailed_predictions'])
-        
-        # 6. Análise por liga
-        league_analysis = self.analyze_by_league(test_results['detailed_predictions'])
-        
-        return {
-            'data_split_info': data_split['split_info'],
-            'optimization_results': {
-                'best_params': best_params,
-                'best_val_accuracy': best_val_acc,
-                'all_combinations': optimization_results
-            },
-            'test_results': test_results,
-            'confidence_analysis': confidence_analysis,
-            'league_analysis': league_analysis,
-            'summary': {
-                'total_test_predictions': len(test_results['detailed_predictions']),
-                'test_accuracy': test_results['accuracy'],
-                'test_precision': test_results['precision'],
-                'test_recall': test_results['recall'],
-                'test_f1': test_results['f1_score']
-            }
-        }
-    
-    def detailed_evaluation(self, system, train_data, val_data, test_data):
-        """Avaliação detalhada com múltiplas métricas"""
-        
-        # Combinar train+val para treinamento final
-        training_data = pd.concat([train_data, val_data]).sort_values('date')
-        
-        detailed_predictions = []
-        predictions = []
-        actuals = []
-        probabilities = []
-        
-        # Agrupar por liga
-        leagues = test_data['league_id'].unique()
-        
-        for league_id in leagues:
-            league_training = training_data[training_data['league_id'] == league_id]
-            league_test = test_data[test_data['league_id'] == league_id]
-            
-            if len(league_training) < 30:  # Mínimo para avaliação confiável
-                continue
-            
-            league_name = league_test['league_name'].iloc[0] if len(league_test) > 0 else f"Liga_{league_id}"
-            
-            # Para cada jogo de teste
-            for idx, match in league_test.iterrows():
-                try:
-                    # Dados históricos até a data do jogo
-                    match_date = match['date']
-                    historical_data = league_training[league_training['date'] < match_date]
-                    
-                    # Dados dos times
-                    home_team_data = historical_data[
-                        historical_data['home_team_id'] == match['home_team_id']
-                    ]
-                    away_team_data = historical_data[
-                        historical_data['away_team_id'] == match['away_team_id']
-                    ]
-                    
-                    if len(home_team_data) < system.min_games_threshold or \
-                       len(away_team_data) < system.min_games_threshold:
-                        continue
-                    
-                    # Fazer predição
-                    prediction = system.predict_match(historical_data, home_team_data, away_team_data)
-                    
-                    # Resultado real
-                    actual = match['over_05'] == 1
-                    predicted = prediction['final_probability'] > 0.5
-                    
-                    # Salvar resultados detalhados
-                    detailed_predictions.append({
-                        'date': match['date'],
-                        'league': league_name,
-                        'home_team': match.get('home_team', 'Unknown'),
-                        'away_team': match.get('away_team', 'Unknown'),
-                        'predicted_probability': prediction['final_probability'],
-                        'confidence_percentage': prediction['confidence_percentage'],
-                        'predicted_class': predicted,
-                        'actual_class': actual,
-                        'correct': predicted == actual,
-                        'breakdown': prediction['breakdown'],
-                        'ht_home_goals': match.get('ht_home_goals', 0),
-                        'ht_away_goals': match.get('ht_away_goals', 0)
-                    })
-                    
-                    predictions.append(predicted)
-                    actuals.append(actual)
-                    probabilities.append(prediction['final_probability'])
-                    
-                except Exception as e:
-                    continue
-        
-        # Calcular métricas
-        if len(predictions) > 0:
-            accuracy = accuracy_score(actuals, predictions)
-            precision = precision_score(actuals, predictions, zero_division=0)
-            recall = recall_score(actuals, predictions, zero_division=0)
-            f1 = f1_score(actuals, predictions, zero_division=0)
-            
-            return {
-                'accuracy': accuracy,
-                'precision': precision,
-                'recall': recall,
-                'f1_score': f1,
-                'total_predictions': len(predictions),
-                'detailed_predictions': detailed_predictions
-            }
-        
-        return {
-            'accuracy': 0,
-            'precision': 0,
-            'recall': 0,
-            'f1_score': 0,
-            'total_predictions': 0,
-            'detailed_predictions': []
-        }
-    
-    def analyze_by_confidence_ranges(self, detailed_predictions):
-        """Analisa performance por faixas de confiança"""
-        
-        if not detailed_predictions:
-            return []
-        
-        df = pd.DataFrame(detailed_predictions)
-        
-        confidence_ranges = [
-            (50, 60), (60, 70), (70, 80), (80, 90), (90, 100)
-        ]
-        
-        analysis = []
-        
-        for min_conf, max_conf in confidence_ranges:
-            mask = (df['confidence_percentage'] >= min_conf) & \
-                   (df['confidence_percentage'] < max_conf)
-            
-            subset = df[mask]
-            
-            if len(subset) > 0:
-                accuracy = subset['correct'].mean()
-                count = len(subset)
-                avg_confidence = subset['confidence_percentage'].mean()
-                
-                # Análise adicional
-                over_predictions = subset[subset['predicted_class'] == True]
-                over_accuracy = over_predictions['correct'].mean() if len(over_predictions) > 0 else 0
-                
-                analysis.append({
-                    'confidence_range': f"{min_conf}-{max_conf}%",
-                    'predictions_count': count,
-                    'accuracy': accuracy,
-                    'avg_confidence': avg_confidence,
-                    'over_predictions': len(over_predictions),
-                    'over_accuracy': over_accuracy
-                })
-        
-        return analysis
-    
-    def analyze_by_league(self, detailed_predictions):
-        """Analisa performance por liga"""
-        
-        if not detailed_predictions:
-            return []
-        
-        df = pd.DataFrame(detailed_predictions)
-        
-        league_analysis = []
-        
-        for league in df['league'].unique():
-            league_data = df[df['league'] == league]
-            
-            if len(league_data) >= 10:  # Mínimo para análise
-                accuracy = league_data['correct'].mean()
-                avg_confidence = league_data['confidence_percentage'].mean()
-                
-                league_analysis.append({
-                    'league': league,
-                    'predictions_count': len(league_data),
-                    'accuracy': accuracy,
-                    'avg_confidence': avg_confidence
-                })
-        
-        # Ordenar por acurácia
-        league_analysis.sort(key=lambda x: x['accuracy'], reverse=True)
-        
-        return league_analysis
+# Inicializar session state para o modelo
+if 'trained_model' not in st.session_state:
+    st.session_state.trained_model = None
+if 'model_trained' not in st.session_state:
+    st.session_state.model_trained = False
 
-# Funções para integração com Streamlit
-def create_prediction_breakdown_display(prediction_result):
-    """Cria display detalhado da predição"""
-    
-    breakdown = prediction_result['breakdown']
-    details = prediction_result['analysis_details']
-    
+# Configuração da API Key
+try:
+    API_KEY = st.secrets["API_KEY"]
+except:
+    API_KEY = "474f15de5b22951077ccb71b8d75b95c"
+
+# URL base da API-SPORTS
+API_BASE_URL = "https://v3.football.api-sports.io"
+
+# Diretório para salvar modelos
+MODEL_DIR = "models"
+try:
+    if not os.path.exists(MODEL_DIR):
+        os.makedirs(MODEL_DIR)
+except Exception as e:
+    MODEL_DIR = "/tmp/models"
+    if not os.path.exists(MODEL_DIR):
+        os.makedirs(MODEL_DIR)
+
+def get_api_headers():
+    """Retorna os headers corretos para API-SPORTS"""
     return {
-        'Liga Base': f"{breakdown['league_base']:.1f}%",
-        'Ajuste Times': f"{breakdown['team_adjustment']:+.1f}%",
-        'Contexto Jogo': f"{breakdown['context_adjustment']:+.1f}%",
-        'Taxa Final': f"{breakdown['final']:.1f}%",
-        'Jogos Casa': details['teams']['home_stats']['games_count'],
-        'Jogos Fora': details['teams']['away_stats']['games_count'],
-        'Consistência Casa': f"{details['teams']['home_stats']['consistency_score']:.2f}",
-        'Consistência Fora': f"{details['teams']['away_stats']['consistency_score']:.2f}",
-        'Outliers Casa': details['teams']['home_stats']['outliers_detected'],
-        'Outliers Fora': details['teams']['away_stats']['outliers_detected']
+        'x-apisports-key': API_KEY
     }
 
-def run_system_backtest(historical_data, leagues_to_test=None):
-    """Executa backtesting para múltiplas ligas"""
-    
-    prediction_system = SmartPredictionSystem()
-    backtesting_engine = BacktestingEngine(prediction_system)
-    
-    if leagues_to_test is None:
-        leagues_to_test = historical_data['league_id'].unique()[:10]  # Top 10 ligas
-    
-    results = {}
-    
-    for league_id in leagues_to_test:
-        league_data = historical_data[historical_data['league_id'] == league_id]
+def test_api_connection():
+    """Testa a conectividade com a API"""
+    try:
+        headers = get_api_headers()
+        response = requests.get(
+            f'{API_BASE_URL}/status',
+            headers=headers,
+            timeout=10
+        )
         
-        if len(league_data) < 100:  # Mínimo de jogos
+        if response.status_code == 200:
+            return True, "Conexão OK"
+        else:
+            return False, f"Status HTTP: {response.status_code}"
+            
+    except requests.exceptions.Timeout:
+        return False, "Timeout - conexão lenta"
+    except requests.exceptions.ConnectionError:
+        return False, "Erro de conexão - verifique internet"
+    except Exception as e:
+        return False, f"Erro: {str(e)}"
+
+def check_api_status():
+    """Verifica o status e limites da API com tratamento robusto"""
+    headers = get_api_headers()
+    
+    try:
+        response = requests.get(
+            f'{API_BASE_URL}/status',
+            headers=headers,
+            timeout=15
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            if 'response' in data:
+                status = data['response']
+                account = status.get('account', {})
+                subscription = status.get('subscription', {})
+                requests_info = status.get('requests', {})
+                
+                requests_remaining = requests_info.get('limit_day', 0) - requests_info.get('current', 0)
+                
+                return True, requests_remaining, {
+                    'account': account,
+                    'subscription': subscription,
+                    'requests': requests_info
+                }
+            elif 'errors' in data:
+                if isinstance(data['errors'], list) and len(data['errors']) > 0:
+                    error_msg = data['errors'][0]
+                elif isinstance(data['errors'], dict):
+                    error_msg = data['errors'].get('token', str(data['errors']))
+                else:
+                    error_msg = str(data['errors'])
+                return False, 0, error_msg
+        else:
+            return False, 0, f"Status Code: {response.status_code}"
+    except requests.exceptions.Timeout:
+        return False, 0, "Timeout - conexão lenta"
+    except requests.exceptions.ConnectionError:
+        return False, 0, "Erro de conexão"
+    except Exception as e:
+        return False, 0, str(e)
+
+def get_fixtures_with_retry(date_str, max_retries=3):
+    """Busca jogos da API com retry automático para tratar erros de conexão"""
+    headers = get_api_headers()
+    
+    for attempt in range(max_retries):
+        try:
+            response = requests.get(
+                f'{API_BASE_URL}/fixtures',
+                headers=headers,
+                params={'date': date_str},
+                timeout=30,
+                stream=False
+            )
+            
+            if response.status_code == 200:
+                try:
+                    data = response.json()
+                    
+                    if 'errors' in data and data['errors']:
+                        if attempt == 0:
+                            st.warning(f"Erro da API para {date_str}: {data['errors']}")
+                        return []
+                    
+                    fixtures = data.get('response', [])
+                    return fixtures
+                    
+                except Exception as json_error:
+                    if attempt < max_retries - 1:
+                        time.sleep(2 ** attempt)
+                        continue
+                    else:
+                        return []
+            else:
+                if attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                else:
+                    return []
+                    
+        except requests.exceptions.Timeout:
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            else:
+                return []
+                
+        except requests.exceptions.ConnectionError:
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            else:
+                return []
+                
+        except Exception:
+            if attempt < max_retries - 1:
+                time.sleep(2 ** attempt)
+                continue
+            else:
+                return []
+    
+    return []
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def get_fixtures_cached_robust(date_str):
+    """Busca jogos com cache robusto"""
+    try:
+        return get_fixtures_with_retry(date_str)
+    except Exception:
+        return []
+
+def load_historical_data():
+    """Carrega dados históricos do arquivo local"""
+    data_files = [
+        "data/historical_matches.parquet",
+        "data/historical_matches.csv",
+        "historical_matches.parquet",
+        "historical_matches.csv",
+        "data/historical_matches_complete.parquet",
+        "data/historical_matches_cache.parquet"
+    ]
+    
+    for file_path in data_files:
+        if os.path.exists(file_path):
+            try:
+                if file_path.endswith('.parquet'):
+                    df = pd.read_parquet(file_path)
+                else:
+                    df = pd.read_csv(file_path)
+                
+                if 'ht_home' in df.columns and 'ht_away' in df.columns:
+                    df['over_05'] = (df['ht_home'] + df['ht_away']) > 0
+                return df, f"✅ {len(df)} jogos carregados do arquivo local"
+            except Exception:
+                continue
+    
+    return None, "❌ Nenhum arquivo de dados históricos encontrado"
+
+def collect_historical_data_optimized(days=30, use_cached=True):
+    """Versão otimizada da coleta de dados históricos"""
+    
+    # 1. Primeiro, sempre tentar carregar do cache
+    if use_cached:
+        df, message = load_historical_data()
+        if df is not None:
+            st.info(message)
+            # Filtrar apenas os dias necessários
+            if days < 730:
+                cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+                if 'date' in df.columns:
+                    df_filtered = df[df['date'] >= cutoff_date].copy()
+                    st.info(f"📊 Usando cache: {len(df_filtered)} jogos dos últimos {days} dias")
+                    return df_filtered
+            return df
+    
+    # 2. Se não usar cache ou não encontrou arquivo, coletar dados
+    st.warning("⚠️ Coleta de dados da API pode ser lenta. Recomendo usar dados em cache!")
+    
+    # Para o modelo ML, não precisamos de todos os dias
+    # Podemos usar amostragem para reduzir requisições
+    if days > 30:
+        # Amostragem inteligente: mais dias recentes, menos dias antigos
+        sample_days = []
+        
+        # Últimos 7 dias completos
+        for i in range(7):
+            sample_days.append(i + 1)
+        
+        # Próximos 23 dias: um a cada 2 dias
+        for i in range(7, min(30, days), 2):
+            sample_days.append(i + 1)
+        
+        # Restante: um a cada 5 dias
+        for i in range(30, days, 5):
+            sample_days.append(i + 1)
+        
+        total_requests = len(sample_days)
+        st.info(f"🚀 Otimização: coletando {total_requests} dias amostrados de {days} dias totais")
+    else:
+        sample_days = list(range(1, days + 1))
+        total_requests = days
+    
+    # 3. Coleta paralela com chunks
+    all_data = []
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    # Processar em chunks para mostrar progresso
+    chunk_size = 5
+    chunks = [sample_days[i:i + chunk_size] for i in range(0, len(sample_days), chunk_size)]
+    
+    for chunk_idx, chunk in enumerate(chunks):
+        chunk_data = []
+        
+        for day_offset in chunk:
+            date = datetime.now() - timedelta(days=day_offset)
+            date_str = date.strftime('%Y-%m-%d')
+            
+            try:
+                # Usar cache de fixtures se disponível
+                fixtures = get_fixtures_cached_robust(date_str)
+                
+                if fixtures:
+                    for match in fixtures:
+                        try:
+                            if match['fixture']['status']['short'] == 'FT' and match.get('score', {}).get('halftime'):
+                                match_data = extract_match_features(match)
+                                if match_data:
+                                    chunk_data.append(match_data)
+                        except:
+                            continue
+            except:
+                continue
+        
+        all_data.extend(chunk_data)
+        
+        # Atualizar progresso
+        progress = (chunk_idx + 1) / len(chunks)
+        progress_bar.progress(progress)
+        status_text.text(f"📊 Coletando dados: {len(all_data)} jogos encontrados...")
+        
+        # Pequena pausa entre chunks
+        if chunk_idx < len(chunks) - 1:
+            time.sleep(0.2)
+    
+    progress_bar.empty()
+    status_text.empty()
+    
+    # 4. Salvar dados coletados em cache para uso futuro
+    if len(all_data) > 100:
+        try:
+            df_new = pd.DataFrame(all_data)
+            # Tentar salvar como parquet (mais eficiente)
+            cache_file = "data/historical_matches_cache.parquet"
+            os.makedirs("data", exist_ok=True)
+            df_new.to_parquet(cache_file)
+            st.success(f"💾 Cache atualizado: {len(all_data)} jogos salvos")
+        except:
+            pass
+    
+    st.info(f"🎯 Total de jogos coletados: {len(all_data)}")
+    
+    return pd.DataFrame(all_data)
+
+# Usar a versão otimizada
+collect_historical_data_robust = collect_historical_data_optimized
+
+def extract_match_features(match):
+    """Extrai features para ML com tratamento de erro"""
+    try:
+        home_team = match['teams']['home']['name']
+        away_team = match['teams']['away']['name']
+        league_id = match['league']['id']
+        league_name = match['league']['name']
+        country = match['league']['country']
+        
+        ht_home = match['score']['halftime']['home']
+        ht_away = match['score']['halftime']['away']
+        over_05 = 1 if (ht_home + ht_away) > 0 else 0
+        
+        features = {
+            'date': match['fixture']['date'][:10],
+            'timestamp': match['fixture']['timestamp'],
+            'league_id': league_id,
+            'league_name': league_name,
+            'country': country,
+            'home_team': home_team,
+            'away_team': away_team,
+            'home_team_id': match['teams']['home']['id'],
+            'away_team_id': match['teams']['away']['id'],
+            'ht_home_goals': ht_home,
+            'ht_away_goals': ht_away,
+            'ht_total_goals': ht_home + ht_away,
+            'over_05': over_05,
+            'venue': match['fixture']['venue']['name'] if match['fixture']['venue'] else 'Unknown',
+            'referee': match['fixture']['referee'] if match['fixture']['referee'] else 'Unknown'
+        }
+        
+        return features
+    except Exception:
+        return None
+
+def prepare_ml_features_hybrid(df):
+    """
+    Versão híbrida que mantém TODAS as features avançadas
+    mas com otimizações de performance
+    """
+    
+    # Garantir coluna over_05
+    if 'over_05' not in df.columns:
+        if 'ht_home_goals' in df.columns and 'ht_away_goals' in df.columns:
+            df['over_05'] = (df['ht_home_goals'] + df['ht_away_goals']) > 0
+        elif 'ht_home' in df.columns and 'ht_away' in df.columns:
+            df['over_05'] = (df['ht_home'] + df['ht_away']) > 0
+    
+    if 'ht_total_goals' not in df.columns:
+        if 'ht_home_goals' in df.columns and 'ht_away_goals' in df.columns:
+            df['ht_total_goals'] = df['ht_home_goals'] + df['ht_away_goals']
+        elif 'ht_home' in df.columns and 'ht_away' in df.columns:
+            df['ht_total_goals'] = df['ht_home'] + df['ht_away']
+    
+    # Ordenar por data
+    if 'date' in df.columns:
+        df = df.sort_values('date').reset_index(drop=True)
+    
+    st.info("🧠 Preparando TODAS as 25+ features avançadas com otimização...")
+    
+    # Pré-calcular estatísticas agregadas para performance
+    team_stats = {}
+    
+    # Inicializar com numpy arrays para melhor performance
+    unique_teams = pd.concat([df['home_team_id'], df['away_team_id']]).unique()
+    
+    for team_id in unique_teams:
+        team_stats[team_id] = {
+            'games': 0,
+            'over_05': 0,
+            'over_05_binary': 0,
+            'goals_scored': 0,
+            'goals_conceded': 0,
+            'goals_capped': 0,
+            'home_games': 0,
+            'home_over': 0,
+            'home_over_binary': 0,
+            'home_goals': 0,
+            'home_goals_capped': 0,
+            'away_games': 0,
+            'away_over': 0,
+            'away_over_binary': 0,
+            'away_goals': 0,
+            'away_goals_capped': 0,
+            'goals_list': [],
+            'over_list': [],
+            'extreme_games': 0
+        }
+    
+    features = []
+    total_rows = len(df)
+    
+    # Processar com barra de progresso para grandes datasets
+    progress_bar = st.progress(0)
+    progress_step = max(1, total_rows // 20)  # Atualizar a cada 5%
+    
+    for idx, row in df.iterrows():
+        if idx % progress_step == 0:
+            progress = idx / total_rows
+            progress_bar.progress(progress)
+        
+        home_id = row['home_team_id']
+        away_id = row['away_team_id']
+        
+        # Obter estatísticas atuais
+        home_stats = team_stats[home_id]
+        away_stats = team_stats[away_id]
+        
+        # Calcular features básicas
+        home_over_rate = home_stats['over_05'] / max(home_stats['games'], 1)
+        home_over_rate_binary = home_stats['over_05_binary'] / max(home_stats['games'], 1)
+        home_avg_goals = home_stats['goals_scored'] / max(home_stats['games'], 1)
+        home_avg_goals_capped = home_stats['goals_capped'] / max(home_stats['games'], 1)
+        home_home_over_rate = home_stats['home_over'] / max(home_stats['home_games'], 1)
+        home_home_over_rate_binary = home_stats['home_over_binary'] / max(home_stats['home_games'], 1)
+        
+        away_over_rate = away_stats['over_05'] / max(away_stats['games'], 1)
+        away_over_rate_binary = away_stats['over_05_binary'] / max(away_stats['games'], 1)
+        away_avg_goals = away_stats['goals_scored'] / max(away_stats['games'], 1)
+        away_avg_goals_capped = away_stats['goals_capped'] / max(away_stats['games'], 1)
+        away_away_over_rate = away_stats['away_over'] / max(away_stats['away_games'], 1)
+        away_away_over_rate_binary = away_stats['away_over_binary'] / max(away_stats['away_games'], 1)
+        
+        # Features de liga (usar cache)
+        league_id = row['league_id']
+        league_mask = df['league_id'] == league_id
+        league_data = df.loc[league_mask & (df.index < idx)]  # Apenas jogos anteriores
+        league_over_rate = league_data['over_05'].mean() if len(league_data) > 0 else 0.5
+        league_over_rate_binary = (league_data['over_05'] > 0).mean() if len(league_data) > 0 else 0.5
+        
+        # FEATURES AVANÇADAS - Coeficiente de Variação
+        if len(home_stats['goals_list']) > 1:
+            home_goals_std = np.std(home_stats['goals_list'])
+            home_goals_mean = np.mean(home_stats['goals_list'])
+            home_goals_cv = home_goals_std / (home_goals_mean + 0.01)
+            home_consistency = 1 / (1 + home_goals_cv)
+        else:
+            home_consistency = 0.5
+            home_goals_cv = 1.0
+        
+        if len(away_stats['goals_list']) > 1:
+            away_goals_std = np.std(away_stats['goals_list'])
+            away_goals_mean = np.mean(away_stats['goals_list'])
+            away_goals_cv = away_goals_std / (away_goals_mean + 0.01)
+            away_consistency = 1 / (1 + away_goals_cv)
+        else:
+            away_consistency = 0.5
+            away_goals_cv = 1.0
+        
+        # FEATURES AVANÇADAS - Combined Score
+        home_strength_binary = home_over_rate_binary * home_avg_goals_capped * home_consistency
+        away_strength_binary = away_over_rate_binary * away_avg_goals_capped * away_consistency
+        combined_score_binary = home_strength_binary + away_strength_binary
+        
+        # FEATURES AVANÇADAS - Momentum Analysis
+        home_recent = home_stats['over_list'][-5:] if len(home_stats['over_list']) >= 5 else home_stats['over_list']
+        away_recent = away_stats['over_list'][-5:] if len(away_stats['over_list']) >= 5 else away_stats['over_list']
+        
+        home_momentum = sum([1 if x > 0 else 0 for x in home_recent]) / len(home_recent) if home_recent else home_over_rate_binary
+        away_momentum = sum([1 if x > 0 else 0 for x in away_recent]) / len(away_recent) if away_recent else away_over_rate_binary
+        
+        # FEATURES AVANÇADAS - Outlier Detection
+        home_extreme_rate = home_stats['extreme_games'] / max(home_stats['games'], 1)
+        away_extreme_rate = away_stats['extreme_games'] / max(away_stats['games'], 1)
+        
+        # Criar dicionário com TODAS as features
+        feature_row = {
+            # Features básicas
+            'home_over_rate': home_over_rate,
+            'home_avg_goals': home_avg_goals,
+            'home_home_over_rate': home_home_over_rate,
+            'away_over_rate': away_over_rate,
+            'away_avg_goals': away_avg_goals,
+            'away_away_over_rate': away_away_over_rate,
+            'league_over_rate': league_over_rate,
+            'combined_over_rate': (home_over_rate + away_over_rate) / 2,
+            'combined_goals': home_avg_goals + away_avg_goals,
+            
+            # Features binárias
+            'home_over_rate_binary': home_over_rate_binary,
+            'home_avg_goals_capped': home_avg_goals_capped,
+            'home_home_over_rate_binary': home_home_over_rate_binary,
+            'away_over_rate_binary': away_over_rate_binary,
+            'away_avg_goals_capped': away_avg_goals_capped,
+            'away_away_over_rate_binary': away_away_over_rate_binary,
+            'league_over_rate_binary': league_over_rate_binary,
+            'combined_over_rate_binary': (home_over_rate_binary + away_over_rate_binary) / 2,
+            'combined_goals_capped': home_avg_goals_capped + away_avg_goals_capped,
+            
+            # FEATURES AVANÇADAS - Coeficiente de Variação
+            'home_goals_cv': home_goals_cv,
+            'away_goals_cv': away_goals_cv,
+            'home_consistency': home_consistency,
+            'away_consistency': away_consistency,
+            'consistency_avg': (home_consistency + away_consistency) / 2,
+            'consistency_diff': abs(home_consistency - away_consistency),
+            
+            # FEATURES AVANÇADAS - Combined Score
+            'combined_score_binary': combined_score_binary,
+            'home_strength_binary': home_strength_binary,
+            'away_strength_binary': away_strength_binary,
+            
+            # FEATURES AVANÇADAS - Momentum
+            'home_momentum': home_momentum,
+            'away_momentum': away_momentum,
+            'momentum_sum': home_momentum + away_momentum,
+            'momentum_diff': abs(home_momentum - away_momentum),
+            'momentum_avg': (home_momentum + away_momentum) / 2,
+            
+            # FEATURES AVANÇADAS - Outliers
+            'home_extreme_rate': home_extreme_rate,
+            'away_extreme_rate': away_extreme_rate,
+            'extreme_rate_avg': (home_extreme_rate + away_extreme_rate) / 2,
+            
+            # Target
+            'target': row['over_05']
+        }
+        
+        features.append(feature_row)
+        
+        # Atualizar estatísticas para próxima iteração
+        ht_home_goals = row.get('ht_home_goals', row.get('ht_home', 0))
+        ht_away_goals = row.get('ht_away_goals', row.get('ht_away', 0))
+        ht_total = ht_home_goals + ht_away_goals
+        
+        # Atualizar home team
+        team_stats[home_id]['games'] += 1
+        team_stats[home_id]['over_05'] += row['over_05']
+        team_stats[home_id]['over_05_binary'] += 1 if row['over_05'] > 0 else 0
+        team_stats[home_id]['goals_scored'] += ht_home_goals
+        team_stats[home_id]['goals_capped'] += min(ht_home_goals, 1)
+        team_stats[home_id]['goals_conceded'] += ht_away_goals
+        team_stats[home_id]['home_games'] += 1
+        team_stats[home_id]['home_over'] += row['over_05']
+        team_stats[home_id]['home_over_binary'] += 1 if row['over_05'] > 0 else 0
+        team_stats[home_id]['home_goals'] += ht_home_goals
+        team_stats[home_id]['home_goals_capped'] += min(ht_home_goals, 1)
+        team_stats[home_id]['goals_list'].append(ht_home_goals)
+        team_stats[home_id]['over_list'].append(row['over_05'])
+        if ht_total > 2:
+            team_stats[home_id]['extreme_games'] += 1
+        
+        # Atualizar away team
+        team_stats[away_id]['games'] += 1
+        team_stats[away_id]['over_05'] += row['over_05']
+        team_stats[away_id]['over_05_binary'] += 1 if row['over_05'] > 0 else 0
+        team_stats[away_id]['goals_scored'] += ht_away_goals
+        team_stats[away_id]['goals_capped'] += min(ht_away_goals, 1)
+        team_stats[away_id]['goals_conceded'] += ht_home_goals
+        team_stats[away_id]['away_games'] += 1
+        team_stats[away_id]['away_over'] += row['over_05']
+        team_stats[away_id]['away_over_binary'] += 1 if row['over_05'] > 0 else 0
+        team_stats[away_id]['away_goals'] += ht_away_goals
+        team_stats[away_id]['away_goals_capped'] += min(ht_away_goals, 1)
+        team_stats[away_id]['goals_list'].append(ht_away_goals)
+        team_stats[away_id]['over_list'].append(row['over_05'])
+        if ht_total > 2:
+            team_stats[away_id]['extreme_games'] += 1
+        
+        # Manter apenas últimos 10 jogos para economizar memória
+        for team_id in [home_id, away_id]:
+            if len(team_stats[team_id]['goals_list']) > 10:
+                team_stats[team_id]['goals_list'] = team_stats[team_id]['goals_list'][-10:]
+                team_stats[team_id]['over_list'] = team_stats[team_id]['over_list'][-10:]
+    
+    # Limpar barra de progresso
+    progress_bar.empty()
+    
+    features_df = pd.DataFrame(features)
+    st.success(f"✅ {len(features_df.columns)-1} features avançadas preparadas!")
+    
+    return features_df, team_stats
+
+# Usar a versão híbrida
+prepare_ml_features = prepare_ml_features_hybrid
+
+def train_ml_model_robust(df):
+    """Versão robusta do treinamento com verificações"""
+    
+    # Verificar se temos dados suficientes
+    if len(df) < 100:
+        st.error("❌ Dados insuficientes para treinamento (mínimo 100 jogos)")
+        st.info("💡 Tente coletar mais dias ou use dados em cache")
+        return None, None
+    
+    try:
+        st.info("🧠 Preparando features avançadas (coeficiente de variação, combined score, momentum)...")
+        features_df, team_stats = prepare_ml_features(df)
+        
+        league_analysis = analyze_leagues(df)
+        
+        feature_cols = [col for col in features_df.columns if col != 'target']
+        X = features_df[feature_cols]
+        y = features_df['target']
+        
+        st.info(f"📊 Total de features: {len(feature_cols)}")
+        st.info(f"🎯 Features incluem: Coeficiente de Variação, Combined Score, Momentum, Outliers")
+        
+        X_temp, X_test, y_temp, y_test = train_test_split(X, y, test_size=0.15, random_state=42, stratify=y)
+        X_train, X_val, y_train, y_val = train_test_split(X_temp, y_temp, test_size=0.176, random_state=42, stratify=y_temp)
+        
+        scaler = StandardScaler()
+        X_train_scaled = scaler.fit_transform(X_train)
+        X_val_scaled = scaler.transform(X_val)
+        X_test_scaled = scaler.transform(X_test)
+        
+        models = {
+            'RandomForest': RandomForestClassifier(
+                n_estimators=300,
+                max_depth=12,
+                min_samples_split=3,
+                min_samples_leaf=2,
+                random_state=42, 
+                n_jobs=-1
+            ),
+            'GradientBoosting': GradientBoostingClassifier(
+                n_estimators=300,
+                learning_rate=0.08,
+                max_depth=6,
+                min_samples_split=3,
+                random_state=42
+            )
+        }
+        
+        best_model = None
+        best_score = 0
+        results = {}
+        
+        st.info("🧠 Treinando modelos avançados...")
+        for name, model in models.items():
+            with st.spinner(f"Treinando {name}..."):
+                model.fit(X_train_scaled, y_train)
+                
+                val_pred = model.predict(X_val_scaled)
+                val_acc = accuracy_score(y_val, val_pred)
+                
+                test_pred = model.predict(X_test_scaled)
+                test_acc = accuracy_score(y_test, test_pred)
+                test_prec = precision_score(y_test, test_pred)
+                test_rec = recall_score(y_test, test_pred)
+                test_f1 = f1_score(y_test, test_pred)
+                
+                results[name] = {
+                    'val_accuracy': val_acc,
+                    'test_accuracy': test_acc,
+                    'precision': test_prec,
+                    'recall': test_rec,
+                    'f1_score': test_f1
+                }
+                
+                st.success(f"✅ {name}: F1-Score = {test_f1:.1%} | Acurácia = {test_acc:.1%}")
+                
+                if test_f1 > best_score:
+                    best_score = test_f1
+                    best_model = model
+        
+        model_data = {
+            'model': best_model,
+            'scaler': scaler,
+            'feature_cols': feature_cols,
+            'team_stats': team_stats,
+            'league_analysis': league_analysis,
+            'results': results,
+            'training_date': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
+            'total_samples': len(df),
+            'training_days': len(df['date'].unique()) if 'date' in df.columns else 0,
+            'features_count': len(feature_cols),
+            'advanced_features': True
+        }
+        
+        st.session_state.trained_model = model_data
+        st.session_state.model_trained = True
+        
+        try:
+            for directory in [MODEL_DIR, "/tmp/models"]:
+                try:
+                    if not os.path.exists(directory):
+                        os.makedirs(directory)
+                    model_path = os.path.join(directory, f"model_advanced_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pkl")
+                    joblib.dump(model_data, model_path)
+                    st.success(f"💾 Modelo salvo: {model_path}")
+                    break
+                except Exception:
+                    pass
+        except Exception:
+            pass
+        
+        return model_data, results
+        
+    except Exception as e:
+        st.error(f"❌ Erro durante o treinamento: {str(e)}")
+        st.info("💡 Tente com menos dias de treinamento ou use dados em cache")
+        return None, None
+
+def load_latest_model():
+    """Carrega o modelo mais recente"""
+    try:
+        for directory in [MODEL_DIR, "/tmp/models"]:
+            if os.path.exists(directory):
+                model_files = [f for f in os.listdir(directory) if f.endswith('.pkl')]
+                if model_files:
+                    latest_model = sorted(model_files)[-1]
+                    model_path = os.path.join(directory, latest_model)
+                    return joblib.load(model_path)
+    except Exception:
+        pass
+    return None
+
+def get_league_context(league_name):
+    """Retorna contexto da liga para comparação"""
+    league_averages = {
+        'Premier League': 65,
+        'La Liga': 60,
+        'Serie A': 55,
+        'Bundesliga': 70,
+        'Ligue 1': 58,
+        'Eredivisie': 75,
+        'Primeira Liga': 62,
+        'Championship': 68,
+        'Liga MX': 72,
+        'MLS': 70,
+        'Brasileirão': 68,
+        'Brasileirão Série A': 68,
+        'Brasileirão Série B': 65,
+        'Champions League': 58,
+        'Europa League': 62,
+        'Copa Libertadores': 65,
+        'Bundesliga 2': 72,
+        'Serie B': 58,
+        'La Liga 2': 62,
+        'Liga Portugal 2': 65,
+        'Ligue 2': 60,
+        'Scottish Premiership': 68,
+        'Belgian Pro League': 63,
+        'Superliga Argentina': 66,
+        'Liga Profesional': 66,
+        'J1 League': 61,
+        'K League 1': 64,
+        'Chinese Super League': 59,
+        'Indian Super League': 67,
+        'A-League': 69,
+        'USL League One': 71,
+        'USL League Two': 73,
+        'USL Championship': 69
+    }
+    
+    default_avg = 60
+    
+    league_avg = default_avg
+    for key, value in league_averages.items():
+        if key.lower() in league_name.lower() or league_name.lower() in key.lower():
+            league_avg = value
+            break
+    
+    return {
+        'league_avg': league_avg,
+        'comparison_color': '#38ef7d' if league_avg > 65 else '#667eea' if league_avg > 55 else '#f093fb',
+        'comparison_text': 'Liga Over' if league_avg > 65 else 'Liga Equilibrada' if league_avg > 55 else 'Liga Under'
+    }
+
+def get_prediction_context(pred, league_context):
+    """Gera contexto inteligente da previsão"""
+    confidence = pred['confidence']
+    league_avg = league_context['league_avg']
+    
+    if pred['prediction'] == 'OVER 0.5':
+        if confidence > league_avg + 15:
+            return "🔥 Excelente para Over"
+        elif confidence > league_avg + 8:
+            return "✅ Muito bom para Over"
+        elif confidence > league_avg + 3:
+            return "📈 Acima da média da liga"
+        elif confidence > league_avg:
+            return "📊 Ligeiramente acima"
+        else:
+            return "⚠️ Abaixo do esperado"
+    else:
+        if confidence > 75:
+            return "❄️ Forte indicação Under"
+        elif confidence > 65:
+            return "📉 Boa tendência Under"
+        else:
+            return "🤔 Under com reservas"
+
+def predict_matches(fixtures, model_data):
+    """Faz previsões para os jogos do dia usando features avançadas"""
+    predictions = []
+    
+    if not model_data:
+        return predictions
+    
+    model = model_data['model']
+    scaler = model_data['scaler']
+    feature_cols = model_data['feature_cols']
+    team_stats = model_data['team_stats']
+    league_analysis = model_data.get('league_analysis', {})
+    
+    for fixture in fixtures:
+        if fixture['fixture']['status']['short'] not in ['NS', 'TBD']:
             continue
         
         try:
-            backtest_result = backtesting_engine.run_comprehensive_backtest(league_data)
+            home_id = fixture['teams']['home']['id']
+            away_id = fixture['teams']['away']['id']
+            league_name = fixture['league']['name']
             
-            if backtest_result:
-                league_name = league_data['league_name'].iloc[0]
-                results[league_name] = backtest_result
+            if home_id not in team_stats or away_id not in team_stats:
+                continue
+            
+            home_stats = team_stats[home_id]
+            away_stats = team_stats[away_id]
+            
+            league_info = league_analysis.get(league_name, {})
+            league_over_rate = league_info.get('over_rate', 0.5)
+            
+            home_over_rate = home_stats['over_05'] / max(home_stats['games'], 1)
+            home_over_rate_binary = home_stats['over_05_binary'] / max(home_stats['games'], 1)
+            home_avg_goals = home_stats['goals_scored'] / max(home_stats['games'], 1)
+            home_avg_goals_capped = home_stats['goals_capped'] / max(home_stats['games'], 1)
+            
+            away_over_rate = away_stats['over_05'] / max(away_stats['games'], 1)
+            away_over_rate_binary = away_stats['over_05_binary'] / max(away_stats['games'], 1)
+            away_avg_goals = away_stats['goals_scored'] / max(away_stats['games'], 1)
+            away_avg_goals_capped = away_stats['goals_capped'] / max(away_stats['games'], 1)
+            
+            if len(home_stats['goals_list']) > 1:
+                home_goals_cv = np.std(home_stats['goals_list']) / (np.mean(home_stats['goals_list']) + 0.01)
+                home_consistency = 1 / (1 + home_goals_cv)
+            else:
+                home_consistency = 0.5
+                home_goals_cv = 1.0
                 
-        except Exception as e:
+            if len(away_stats['goals_list']) > 1:
+                away_goals_cv = np.std(away_stats['goals_list']) / (np.mean(away_stats['goals_list']) + 0.01)
+                away_consistency = 1 / (1 + away_goals_cv)
+            else:
+                away_consistency = 0.5
+                away_goals_cv = 1.0
+            
+            home_strength_binary = home_over_rate_binary * home_avg_goals_capped * home_consistency
+            away_strength_binary = away_over_rate_binary * away_avg_goals_capped * away_consistency
+            combined_score_binary = home_strength_binary + away_strength_binary
+            
+            home_recent = home_stats['over_list'][-5:] if len(home_stats['over_list']) >= 5 else home_stats['over_list']
+            away_recent = away_stats['over_list'][-5:] if len(away_stats['over_list']) >= 5 else away_stats['over_list']
+            
+            home_momentum = sum([1 if x > 0 else 0 for x in home_recent]) / len(home_recent) if home_recent else home_over_rate_binary
+            away_momentum = sum([1 if x > 0 else 0 for x in away_recent]) / len(away_recent) if away_recent else away_over_rate_binary
+            
+            features = {}
+            for col in feature_cols:
+                if col == 'home_over_rate':
+                    features[col] = home_over_rate
+                elif col == 'home_avg_goals':
+                    features[col] = home_avg_goals
+                elif col == 'home_home_over_rate':
+                    features[col] = home_stats['home_over'] / max(home_stats['home_games'], 1)
+                elif col == 'away_over_rate':
+                    features[col] = away_over_rate
+                elif col == 'away_avg_goals':
+                    features[col] = away_avg_goals
+                elif col == 'away_away_over_rate':
+                    features[col] = away_stats['away_over'] / max(away_stats['away_games'], 1)
+                elif col == 'league_over_rate':
+                    features[col] = league_over_rate
+                elif col == 'combined_over_rate':
+                    features[col] = (home_over_rate + away_over_rate) / 2
+                elif col == 'combined_goals':
+                    features[col] = home_avg_goals + away_avg_goals
+                elif col == 'home_consistency':
+                    features[col] = home_consistency
+                elif col == 'away_consistency':
+                    features[col] = away_consistency
+                elif col == 'combined_score_binary':
+                    features[col] = combined_score_binary
+                elif col == 'home_momentum':
+                    features[col] = home_momentum
+                elif col == 'away_momentum':
+                    features[col] = away_momentum
+                else:
+                    features[col] = 0.5
+            
+            X = pd.DataFrame([features])[feature_cols]
+            X_scaled = scaler.transform(X)
+            
+            pred_proba = model.predict_proba(X_scaled)[0]
+            pred_class = model.predict(X_scaled)[0]
+            confidence = max(pred_proba) * 100
+            
+            league_trend = league_info.get('trend', 'BALANCED')
+            if league_trend == 'OVER' and pred_class == 1:
+                confidence = min(confidence * 1.05, 95)
+            elif league_trend == 'UNDER' and pred_class == 1:
+                confidence = confidence * 0.95
+            
+            prediction = {
+                'fixture': fixture,
+                'home_team': fixture['teams']['home']['name'],
+                'away_team': fixture['teams']['away']['name'],
+                'league': league_name,
+                'league_trend': league_trend,
+                'country': fixture['league']['country'],
+                'kickoff': fixture['fixture']['date'],
+                'prediction': 'OVER 0.5' if pred_class == 1 else 'UNDER 0.5',
+                'confidence': confidence,
+                'probability_over': pred_proba[1] * 100,
+                'probability_under': pred_proba[0] * 100,
+                'home_stats': home_stats,
+                'away_stats': away_stats,
+                'advanced_features': {
+                    'home_consistency': home_consistency,
+                    'away_consistency': away_consistency,
+                    'combined_score': combined_score_binary,
+                    'home_momentum': home_momentum,
+                    'away_momentum': away_momentum
+                }
+            }
+            
+            predictions.append(prediction)
+            
+        except Exception:
             continue
     
-    return results
+    predictions.sort(key=lambda x: x['confidence'], reverse=True)
+    
+    return predictions
 
-# Exemplo de uso
-def example_usage():
-    """Exemplo de como usar o sistema"""
+def analyze_leagues(df):
+    """Analisa tendências por liga"""
+    league_analysis = {}
     
-    # Criar sistema
-    prediction_system = SmartPredictionSystem()
+    for league_id in df['league_id'].unique():
+        league_data = df[df['league_id'] == league_id]
+        
+        if len(league_data) >= 10:
+            over_rate = league_data['over_05'].mean()
+            avg_goals = league_data['ht_total_goals'].mean()
+            
+            if over_rate >= 0.70:
+                classification = "🔥 LIGA OVER FORTE"
+            elif over_rate >= 0.55:
+                classification = "📈 LIGA OVER"
+            elif over_rate <= 0.30:
+                classification = "❄️ LIGA UNDER FORTE"
+            elif over_rate <= 0.45:
+                classification = "📉 LIGA UNDER"
+            else:
+                classification = "⚖️ LIGA EQUILIBRADA"
+            
+            league_analysis[league_data.iloc[0]['league_name']] = {
+                'country': league_data.iloc[0]['country'],
+                'total_games': len(league_data),
+                'over_rate': over_rate,
+                'avg_goals_ht': avg_goals,
+                'classification': classification,
+                'trend': 'OVER' if over_rate > 0.5 else 'UNDER'
+            }
     
-    # Dados fictícios para exemplo
-    league_data = pd.DataFrame({
-        'over_05': [1, 0, 1, 1, 0, 1, 0, 1, 1, 0] * 10,
-        'date': pd.date_range('2024-01-01', periods=100)
-    })
-    
-    home_team_data = pd.DataFrame({
-        'ht_home_goals': [5, 0, 0, 0, 0],  # Seu exemplo!
-        'over_05': [1, 0, 0, 0, 0],
-        'date': pd.date_range('2024-01-01', periods=5)
-    })
-    
-    away_team_data = pd.DataFrame({
-        'ht_away_goals': [0, 1, 0, 1, 2],
-        'over_05': [0, 1, 0, 1, 1],
-        'date': pd.date_range('2024-01-01', periods=5)
-    })
-    
-    # Fazer predição
-    result = prediction_system.predict_match(league_data, home_team_data, away_team_data)
-    
-    print("Resultado da Predição:")
-    print(f"Taxa Final: {result['confidence_percentage']:.1f}%")
-    print(f"Breakdown: {result['breakdown']}")
-    
-    return result
+    return league_analysis
 
-# Função principal para execução completa
-def main_backtest_analysis(historical_data):
-    """Função principal para executar análise completa"""
+def display_prediction_card_with_averages(pred):
+    """Exibe card de previsão com médias da liga e do sistema"""
     
-    print("🚀 Sistema de Backtesting Inteligente - 365 dias")
-    print("=" * 60)
+    # Obter contexto da liga
+    league_context = get_league_context(pred['league'])
     
-    # Criar sistema
-    prediction_system = SmartPredictionSystem()
-    backtesting_engine = BacktestingEngine(prediction_system)
+    # Container principal do card
+    with st.container():
+        # Estilizar como um card
+        card_col1, card_col2 = st.columns([5, 1])
+        
+        with card_col1:
+            st.markdown(f"### ⚽ {pred['home_team']} vs {pred['away_team']}")
+            
+            # Informações do jogo
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"🏆 **Liga:** {pred['league']} ({pred['country']})")
+            with col2:
+                st.write(f"🕐 **Horário PT:** {pred['kickoff'][11:16]}")
+        
+        with card_col2:
+            # Badge de confiança
+            if pred['confidence'] > 80:
+                st.success(f"**{pred['confidence']:.1f}%**")
+            elif pred['confidence'] > 70:
+                st.info(f"**{pred['confidence']:.1f}%**")
+            else:
+                st.warning(f"**{pred['confidence']:.1f}%**")
+        
+        # Previsão
+        st.info(f"🎯 **Previsão ML:** {pred['prediction']}")
+        
+        # Médias em colunas
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric(
+                label="📊 Média da Liga",
+                value=f"{league_context['league_avg']:.0f}%",
+                delta=league_context['comparison_text']
+            )
+        
+        with col2:
+            st.metric(
+                label="🤖 Média do Sistema Over 0.5 HT",
+                value=f"{pred['probability_over']:.0f}%",
+                delta="ML Prediction"
+            )
+        
+        with col3:
+            diff = pred['confidence'] - league_context['league_avg']
+            st.metric(
+                label="📈 Diferença vs Liga",
+                value=f"{diff:+.0f}%",
+                delta="Acima" if diff > 0 else "Abaixo"
+            )
+        
+        st.markdown("---")
+
+def main():
+    st.title("⚽ HT Goals AI Engine")
+    st.markdown("🚀 Powered by Predictive Modeling & Advanced Metrics")
     
-    # Executar backtesting completo
-    results = backtesting_engine.run_comprehensive_backtest(historical_data)
+    # Teste de conectividade inicial
+    conn_ok, conn_msg = test_api_connection()
     
-    # Exibir resultados
-    print("\n📊 RESULTADOS FINAIS:")
-    print("=" * 60)
+    with st.sidebar:
+        st.title("⚙️ Configurações")
+        
+        # Status da API com indicador visual
+        if conn_ok:
+            api_ok, requests_left, api_status = check_api_status()
+            
+            if not api_ok:
+                st.error(f"❌ {api_status}")
+            else:
+                st.success("✅ API conectada")
+                if requests_left > 0:
+                    st.info(f"📊 Requests restantes hoje: {requests_left}")
+                else:
+                    st.warning(f"⚠️ Sem requests restantes hoje!")
+        else:
+            st.error(f"❌ {conn_msg}")
+        
+        selected_date = st.date_input(
+            "📅 Data para análise:",
+            value=datetime.now().date()
+        )
+        
+        st.subheader("🤖 Machine Learning Avançado")
+        
+        days_training = st.slider(
+            "📊 Dias para treinamento:",
+            min_value=15,
+            max_value=730,
+            value=150
+        )
+        
+        use_cache = st.checkbox(
+            "💾 Usar dados em cache",
+            value=True,
+            help="Recomendado: Usar dados históricos salvos localmente"
+        )
+        
+        st.subheader("🧠 Features Avançadas")
+        st.info("""
+        ✅ **Coeficiente de Variação**
+        ✅ **Combined Score**
+        ✅ **Momentum Analysis**
+        ✅ **Outlier Detection**
+        ✅ **League Consistency**
+        """)
+        
+        # Status do modelo
+        if st.session_state.model_trained and st.session_state.trained_model:
+            model_data = st.session_state.trained_model
+            st.success("✅ Modelo carregado")
+            st.info(f"📅 Treinado em: {model_data['training_date']}")
+            st.info(f"📊 Amostras: {model_data['total_samples']}")
+            
+            if model_data.get('advanced_features', False):
+                st.success("🧠 Modelo com features avançadas")
+                st.info(f"🎯 Total features: {model_data.get('features_count', 'N/A')}")
+            
+            if 'results' in model_data:
+                results = model_data['results']
+                best_model = max(results.items(), key=lambda x: x[1]['f1_score'])
+                st.info(f"🏆 Melhor modelo: {best_model[0]}")
+                st.info(f"📈 F1-Score: {best_model[1]['f1_score']:.1%}")
+        else:
+            model_data = load_latest_model()
+            if model_data:
+                st.session_state.trained_model = model_data
+                st.session_state.model_trained = True
+                st.success("✅ Modelo carregado do arquivo")
+                if model_data.get('advanced_features', False):
+                    st.success("🧠 Modelo com features avançadas")
+            else:
+                st.warning("⚠️ Nenhum modelo encontrado")
     
-    summary = results['summary']
-    print(f"Total Previsões: {summary['total_test_predictions']}")
-    print(f"Acurácia: {summary['test_accuracy']:.1%}")
-    print(f"Precisão: {summary['test_precision']:.1%}")
-    print(f"Recall: {summary['test_recall']:.1%}")
-    print(f"F1-Score: {summary['test_f1']:.1%}")
+    # Tabs principais com nova aba
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
+        "🎯 Previsões do Dia",
+        "📊 Análise por Liga", 
+        "🤖 Treinar Modelo Avançado",
+        "📈 Performance ML",
+        "🚀 Análise Automática"  # Nova aba
+    ])
     
-    print("\n🎯 ANÁLISE POR CONFIANÇA:")
-    for conf_analysis in results['confidence_analysis']:
-        print(f"{conf_analysis['confidence_range']}: "
-              f"{conf_analysis['predictions_count']} jogos → "
-              f"{conf_analysis['accuracy']:.1%} acerto")
+    with tab1:
+        st.header(f"🎯 Previsões para {selected_date.strftime('%d/%m/%Y')}")
+        
+        model_data = None
+        
+        if st.session_state.get('model_trained', False) and st.session_state.get('trained_model'):
+            model_data = st.session_state.trained_model
+            st.success("✅ Modelo carregado da sessão")
+            if model_data.get('advanced_features', False):
+                st.info("🧠 Usando modelo com features avançadas")
+        else:
+            model_data = load_latest_model()
+            if model_data:
+                st.session_state.trained_model = model_data
+                st.session_state.model_trained = True
+                st.success("✅ Modelo carregado do arquivo")
+        
+        if not model_data:
+            st.warning("⚠️ Treine um modelo primeiro na aba 'Treinar Modelo Avançado'")
+            
+            if st.button("🔄 Tentar carregar modelo novamente"):
+                st.rerun()
+        else:
+            st.info(f"🤖 Modelo: {model_data.get('training_date', 'Unknown')}")
+            st.info(f"📊 Times no banco: {len(model_data.get('team_stats', {}))}")
+            
+            date_str = selected_date.strftime('%Y-%m-%d')
+            
+            with st.spinner("🔍 Buscando jogos do dia..."):
+                fixtures = get_fixtures_cached_robust(date_str)
+            
+            if not fixtures:
+                st.info("📅 Nenhum jogo encontrado para esta data")
+                if not conn_ok:
+                    st.error("❌ Verifique sua conexão com a internet")
+            else:
+                with st.spinner("🤖 Aplicando Machine Learning Avançado..."):
+                    predictions = predict_matches(fixtures, model_data)
+                
+                if predictions:
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    total_games = len(predictions)
+                    high_confidence = len([p for p in predictions if p['confidence'] > 70])
+                    over_predictions = len([p for p in predictions if p['prediction'] == 'OVER 0.5'])
+                    avg_confidence = sum([p['confidence'] for p in predictions]) / len(predictions)
+                    
+                    with col1:
+                        st.metric("🎮 Total de Jogos", total_games)
+                    
+                    with col2:
+                        st.metric("🎯 Alta Confiança", high_confidence)
+                    
+                    with col3:
+                        st.metric("📈 Over 0.5", over_predictions)
+                    
+                    with col4:
+                        st.metric("💯 Confiança Média", f"{avg_confidence:.1f}%")
+                    
+                    st.subheader("🏆 Melhores Apostas (Análise Avançada)")
+                    
+                    best_bets = [p for p in predictions if p['prediction'] == 'OVER 0.5' and p['confidence'] > 65]
+                    best_bets.sort(key=lambda x: x['confidence'], reverse=True)
+                    
+                    if best_bets:
+                        for i, pred in enumerate(best_bets[:5]):
+                            # Criar card bonito sem HTML
+                            with st.container():
+                                # Badge de confiança no canto
+                                col1, col2 = st.columns([4, 1])
+                                
+                                with col1:
+                                    st.subheader(f"⚽ {pred['home_team']} vs {pred['away_team']}")
+                                
+                                with col2:
+                                    if pred['confidence'] > 80:
+                                        st.success(f"{pred['confidence']:.1f}%")
+                                    elif pred['confidence'] > 65:
+                                        st.info(f"{pred['confidence']:.1f}%")
+                                    else:
+                                        st.warning(f"{pred['confidence']:.1f}%")
+                                
+                                # Info do jogo
+                                liga_info = f"🏆 **Liga:** {pred['league']} ({pred['country']})"
+                                hora = pred['kickoff'][11:16]
+                                st.write(f"{liga_info} | 🕐 **Horário PT:** {hora}")
+                                
+                                # Previsão
+                                st.info(f"🎯 **Previsão ML:** {pred['prediction']}")
+                                
+                                st.markdown("---")
+                    else:
+                        st.info("🤷 Nenhuma aposta OVER 0.5 com boa confiança encontrada hoje")
+                    
+                    # Lista completa de jogos
+                    st.subheader("📋 Todos os Jogos do Dia")
+                    
+                    # Criar DataFrame para todos os jogos
+                    all_games_data = []
+                    for pred in predictions:
+                        try:
+                            utc_time = datetime.strptime(pred['kickoff'][:16], '%Y-%m-%dT%H:%M')
+                            hora = utc_time.strftime('%H:%M')
+                        except:
+                            hora = pred['kickoff'][11:16]
+                        
+                        all_games_data.append({
+                            'Hora': hora,
+                            'Jogo': f"{pred['home_team']} vs {pred['away_team']}",
+                            'Liga': pred['league'],
+                            'Previsão': pred['prediction'],
+                            'Confiança': f"{pred['confidence']:.0f}%"
+                        })
+                    
+                    # Exibir como tabela
+                    df_all = pd.DataFrame(all_games_data)
+                    st.dataframe(df_all, use_container_width=True, hide_index=True)
+                
+                else:
+                    st.info("🤷 Nenhuma previsão disponível (times sem dados históricos)")
     
-    print("\n🏆 TOP 5 LIGAS:")
-    for league_analysis in results['league_analysis'][:5]:
-        print(f"{league_analysis['league']}: "
-              f"{league_analysis['predictions_count']} jogos → "
-              f"{league_analysis['accuracy']:.1%} acerto")
+    with tab2:
+        st.header("📊 Análise de Ligas")
+        
+        if 'trained_model' in st.session_state:
+            model_data = st.session_state.trained_model
+        else:
+            model_data = load_latest_model()
+        
+        if model_data:
+            df = collect_historical_data_robust(days=15, use_cached=True)
+            
+            if not df.empty:
+                league_analysis = analyze_leagues(df)
+                
+                over_leagues = {k: v for k, v in league_analysis.items() if v['trend'] == 'OVER'}
+                under_leagues = {k: v for k, v in league_analysis.items() if v['trend'] == 'UNDER'}
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    st.subheader("🔥 Ligas OVER (> 50%)")
+                    for league, stats in sorted(over_leagues.items(), key=lambda x: x[1]['over_rate'], reverse=True):
+                        with st.expander(f"{league} - {stats['over_rate']:.1%}"):
+                            st.write(f"**{stats['classification']}**")
+                            st.write(f"📊 Taxa Over: {stats['over_rate']:.1%}")
+                            st.write(f"⚽ Média gols HT: {stats['avg_goals_ht']:.2f}")
+                            st.write(f"🎮 Jogos analisados: {stats['total_games']}")
+                
+                with col2:
+                    st.subheader("❄️ Ligas UNDER (< 50%)")
+                    for league, stats in sorted(under_leagues.items(), key=lambda x: x[1]['over_rate']):
+                        with st.expander(f"{league} - {stats['over_rate']:.1%}"):
+                            st.write(f"**{stats['classification']}**")
+                            st.write(f"📊 Taxa Over: {stats['over_rate']:.1%}")
+                            st.write(f"⚽ Média gols HT: {stats['avg_goals_ht']:.2f}")
+                            st.write(f"🎮 Jogos analisados: {stats['total_games']}")
+        else:
+            st.info("🤖 Treine um modelo primeiro")
     
-    return results
+    with tab3:
+        st.header("🤖 Treinar Modelo ML Avançado")
+        
+        # Aviso sobre conectividade
+        if not conn_ok:
+            st.error(f"❌ {conn_msg}")
+            st.info("💡 **Recomendação**: Marque 'Usar dados em cache' para treinar com dados locais")
+        
+        st.success("""
+        🧠 **FEATURES AVANÇADAS INCLUÍDAS:**
+        
+        ✅ **Coeficiente de Variação**: Mede consistência dos times  
+        ✅ **Combined Score**: Score combinado com múltiplos fatores  
+        ✅ **Momentum Analysis**: Análise dos últimos 5 jogos  
+        ✅ **Outlier Detection**: Detecção de jogos extremos  
+        ✅ **League Consistency**: Consistência por liga  
+        ✅ **Efficiency Metrics**: Eficiência de conversão em Over  
+        """)
+        
+        st.info(f"""
+        O modelo será treinado com **25+ features avançadas**:
+        - **70%** dos dados para treinamento
+        - **15%** para validação  
+        - **15%** para teste final
+        - **{days_training} dias** de dados históricos
+        """)
+        
+        # Aviso sobre quantidade de dados
+        if days_training > 365:
+            st.warning("⚠️ Muitos dias podem causar timeout. Recomendado: 150-365 dias")
+        
+        if st.button("🚀 Iniciar Treinamento Avançado", type="primary"):
+            with st.spinner(f"📊 Coletando {days_training} dias de dados históricos..."):
+                df = collect_historical_data_robust(days=days_training, use_cached=use_cache)
+            
+            if df.empty:
+                st.error("❌ Não foi possível coletar dados")
+                st.info("💡 **Soluções:**")
+                st.info("- Marque 'Usar dados em cache'")
+                st.info("- Reduza os dias de treinamento")
+                st.info("- Verifique sua conexão com internet")
+            else:
+                st.success(f"✅ {len(df)} jogos coletados")
+                
+                with st.spinner("🧠 Treinando modelos avançados..."):
+                    model_data, results = train_ml_model_robust(df)
+                
+                if model_data and results:
+                    st.success("✅ Modelo avançado treinado com sucesso!")
+                    
+                    st.subheader("📊 Resultados do Treinamento Avançado")
+                    
+                    for model_name, metrics in results.items():
+                        col1, col2, col3, col4, col5 = st.columns(5)
+                        
+                        with col1:
+                            st.metric(f"{model_name}", "")
+                        with col2:
+                            st.metric("Validação", f"{metrics['val_accuracy']:.1%}")
+                        with col3:
+                            st.metric("Teste", f"{metrics['test_accuracy']:.1%}")
+                        with col4:
+                            st.metric("Precisão", f"{metrics['precision']:.1%}")
+                        with col5:
+                            st.metric("F1-Score", f"{metrics['f1_score']:.1%}")
+                    
+                    if hasattr(model_data['model'], 'feature_importances_'):
+                        st.subheader("🎯 Features Mais Importantes")
+                        
+                        feature_importance = pd.DataFrame({
+                            'feature': model_data['feature_cols'],
+                            'importance': model_data['model'].feature_importances_
+                        }).sort_values('importance', ascending=False)
+                        
+                        top_features = feature_importance.head(20)
+                        st.bar_chart(top_features.set_index('feature')['importance'])
+                        
+                        advanced_features = top_features[top_features['feature'].str.contains('consistency|combined|momentum|cv|efficiency')]
+                        if not advanced_features.empty:
+                            st.success("🧠 Features avançadas entre as mais importantes:")
+                            for _, row in advanced_features.iterrows():
+                                st.write(f"• **{row['feature']}**: {row['importance']:.3f}")
+                else:
+                    st.error("❌ Falha no treinamento")
+    
+    with tab4:
+        st.header("📈 Performance do Modelo Avançado")
+        
+        if 'trained_model' in st.session_state:
+            model_data = st.session_state.trained_model
+        else:
+            model_data = load_latest_model()
+        
+        if model_data and 'results' in model_data:
+            if model_data.get('advanced_features', False):
+                st.success("🧠 Modelo com Features Avançadas Ativo")
+                st.info(f"📊 Total de features: {model_data.get('features_count', 'N/A')}")
+            else:
+                st.warning("⚠️ Modelo básico (sem features avançadas)")
+            
+            results = model_data['results']
+            
+            best_model_name = max(results.items(), key=lambda x: x[1]['f1_score'])[0]
+            best_metrics = results[best_model_name]
+            
+            st.subheader(f"🏆 Melhor Modelo: {best_model_name}")
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                accuracy = best_metrics['test_accuracy'] * 100
+                st.metric("🎯 Acurácia", f"{accuracy:.1f}%")
+            
+            with col2:
+                precision = best_metrics['precision'] * 100
+                st.metric("💎 Precisão", f"{precision:.1f}%")
+            
+            with col3:
+                recall = best_metrics['recall'] * 100
+                st.metric("📊 Recall", f"{recall:.1f}%")
+            
+            with col4:
+                f1 = best_metrics['f1_score'] * 100
+                st.metric("🏅 F1-Score", f"{f1:.1f}%")
+            
+            st.subheader("📊 Performance Histórica do Modelo")
+            
+            if 'total_samples' in model_data:
+                total_analyzed = model_data['total_samples']
+                accuracy_rate = best_metrics['test_accuracy'] * 100
+                correct_predictions = int(total_analyzed * best_metrics['test_accuracy'])
+                
+                col1, col2, col3 = st.columns(3)
+                
+                with col1:
+                    st.metric("📅 Jogos Analisados", f"{total_analyzed:,}")
+                
+                with col2:
+                    st.metric("✅ Acertos", f"{correct_predictions:,}")
+                
+                with col3:
+                    st.metric("📈 Taxa de Acerto", f"{accuracy_rate:.1f}%")
+            
+            if model_data.get('advanced_features', False):
+                st.subheader("🧠 Análise de Features Avançadas")
+                
+                if hasattr(model_data['model'], 'feature_importances_'):
+                    feature_importance = pd.DataFrame({
+                        'feature': model_data['feature_cols'],
+                        'importance': model_data['model'].feature_importances_
+                    }).sort_values('importance', ascending=False)
+                    
+                    basic_features = feature_importance[feature_importance['feature'].str.contains('home_over_rate|away_over_rate|league_over_rate|combined_over_rate|combined_goals')]
+                    consistency_features = feature_importance[feature_importance['feature'].str.contains('consistency|cv')]
+                    combined_score_features = feature_importance[feature_importance['feature'].str.contains('combined_score|strength|efficiency')]
+                    momentum_features = feature_importance[feature_importance['feature'].str.contains('momentum')]
+                    
+                    col1, col2 = st.columns(2)
+                    
+                    with col1:
+                        st.write("**🎯 Top Features Coeficiente de Variação:**")
+                        if not consistency_features.empty:
+                            for _, row in consistency_features.head(5).iterrows():
+                                st.write(f"• {row['feature']}: {row['importance']:.3f}")
+                        else:
+                            st.write("Nenhuma feature de consistência encontrada")
+                        
+                        st.write("**📈 Top Features Combined Score:**")
+                        if not combined_score_features.empty:
+                            for _, row in combined_score_features.head(5).iterrows():
+                                st.write(f"• {row['feature']}: {row['importance']:.3f}")
+                        else:
+                            st.write("Nenhuma feature de combined score encontrada")
+                    
+                    with col2:
+                        st.write("**🔥 Top Features Momentum:**")
+                        if not momentum_features.empty:
+                            for _, row in momentum_features.head(5).iterrows():
+                                st.write(f"• {row['feature']}: {row['importance']:.3f}")
+                        else:
+                            st.write("Nenhuma feature de momentum encontrada")
+                        
+                        st.write("**⚡ Top Features Básicas:**")
+                        if not basic_features.empty:
+                            for _, row in basic_features.head(5).iterrows():
+                                st.write(f"• {row['feature']}: {row['importance']:.3f}")
+            
+            with st.expander("📚 Entenda as Métricas"):
+                st.write("""
+                **Métricas de Performance:**
+                - **Acurácia**: Percentual total de acertos do modelo
+                - **Precisão**: Quando o modelo prevê OVER 0.5, quantas vezes acerta
+                - **Recall**: Dos jogos que foram OVER 0.5, quantos o modelo identificou
+                - **F1-Score**: Média harmônica entre Precisão e Recall (métrica principal)
+                
+                **Features Avançadas:**
+                - **Coeficiente de Variação**: Mede a consistência dos times (menor variação = mais consistente)
+                - **Combined Score**: Score que combina taxa Over, média de gols e consistência
+                - **Momentum**: Análise dos últimos 5 jogos para detectar tendências
+                - **Efficiency**: Relação entre gols marcados e taxa de Over
+                """)
+            
+            st.subheader("ℹ️ Informações do Modelo")
+            advanced_status = "🧠 Avançado" if model_data.get('advanced_features', False) else "📊 Básico"
+            st.info(f"""
+            - **Tipo**: {advanced_status}
+            - **Data de Treinamento**: {model_data['training_date']}
+            - **Total de Jogos Analisados**: {model_data['total_samples']:,}
+            - **Times no Banco de Dados**: {len(model_data['team_stats']):,}
+            - **Algoritmo**: {best_model_name}
+            - **Total de Features**: {model_data.get('features_count', len(model_data.get('feature_cols', [])))}
+            """)
+            
+            if model_data.get('advanced_features', False):
+                st.success("""
+                🎯 **Features Avançadas Ativas:**
+                ✅ Coeficiente de Variação para consistência  
+                ✅ Combined Score com múltiplos fatores  
+                ✅ Análise de momentum dos últimos jogos  
+                ✅ Detecção de outliers e jogos extremos  
+                ✅ Métricas de eficiência de conversão  
+                """)
+        else:
+            st.info("🤖 Nenhum modelo treinado ainda")
+            st.write("Para começar:")
+            st.write("1. Vá para a aba 'Treinar Modelo Avançado'")
+            st.write("2. Marque 'Usar dados em cache' (recomendado)")
+            st.write("3. Clique em 'Iniciar Treinamento Avançado'")
+            st.write("4. Aguarde o modelo ser treinado com todas as features avançadas")
+    
+    with tab5:
+        st.header("🚀 Análise Automática - Um Clique")
+        st.markdown("Sistema automático que treina o modelo e analisa os jogos de hoje com apenas 1 clique!")
+        
+        # Container central para o botão
+        col1, col2, col3 = st.columns([1, 2, 1])
+        
+        with col2:
+            # Verificar se já tem modelo treinado hoje
+            if 'auto_analysis_done' in st.session_state and st.session_state.auto_analysis_done:
+                st.success("✅ Análise completa! Veja os resultados abaixo.")
+                
+                # Botão para refazer análise
+                if st.button("🔄 Refazer Análise", use_container_width=True):
+                    st.session_state.auto_analysis_done = False
+                    st.rerun()
+            else:
+                # Botão principal
+                if st.button("🎯 ANALISAR JOGOS DE HOJE", use_container_width=True, type="primary", key="auto_analyze"):
+                    
+                    # Container para mostrar o progresso
+                    progress_container = st.container()
+                    
+                    with progress_container:
+                        # Passo 1: Verificar conexão
+                        progress = st.progress(0.1)
+                        status_text = st.empty()
+                        status_text.text("🔍 Verificando conexão com API...")
+                        
+                        conn_ok, conn_msg = test_api_connection()
+                        if not conn_ok:
+                            st.error(f"❌ Erro de conexão: {conn_msg}")
+                            st.stop()
+                        
+                        # Passo 2: Carregar dados
+                        progress.progress(0.2)
+                        status_text.text("📊 Carregando dados históricos...")
+                        
+                        df, message = load_historical_data()
+                        if df is None:
+                            status_text.text("📥 Coletando dados da API (pode demorar)...")
+                            df = collect_historical_data_optimized(days=30, use_cached=False)
+                            if df.empty:
+                                st.error("❌ Não foi possível coletar dados")
+                                st.stop()
+                        
+                        # Passo 3: Treinar modelo
+                        progress.progress(0.4)
+                        status_text.text("🧠 Treinando modelo ML (70% treino, 15% validação, 15% teste)...")
+                        
+                        model_data, results = train_ml_model_robust(df)
+                        if not model_data:
+                            st.error("❌ Erro ao treinar modelo")
+                            st.stop()
+                        
+                        # Passo 4: Buscar jogos de hoje
+                        progress.progress(0.6)
+                        status_text.text("🔍 Buscando jogos de hoje...")
+                        
+                        today = datetime.now().strftime('%Y-%m-%d')
+                        fixtures = get_fixtures_cached_robust(today)
+                        
+                        if not fixtures:
+                            progress.progress(1.0)
+                            status_text.text("✅ Análise completa!")
+                            st.warning("📅 Nenhum jogo encontrado para hoje")
+                            st.session_state.auto_analysis_done = True
+                            st.stop()
+                        
+                        # Passo 5: Fazer previsões
+                        progress.progress(0.8)
+                        status_text.text("🎯 Gerando previsões com ML avançado...")
+                        
+                        predictions = predict_matches(fixtures, model_data)
+                        
+                        # Filtrar apenas OVER 0.5 com boa confiança
+                        best_predictions = [p for p in predictions if p['prediction'] == 'OVER 0.5' and p['confidence'] > 65]
+                        best_predictions.sort(key=lambda x: x['confidence'], reverse=True)
+                        
+                        # Passo 6: Finalizar
+                        progress.progress(1.0)
+                        status_text.text("✅ Análise completa!")
+                        time.sleep(1)
+                        
+                        # Limpar progresso
+                        progress.empty()
+                        status_text.empty()
+                        
+                        # Marcar como concluído
+                        st.session_state.auto_analysis_done = True
+                        st.session_state.auto_predictions = best_predictions
+                        st.session_state.auto_model_data = model_data
+                        st.session_state.auto_results = results
+        
+        # Mostrar resultados se a análise foi feita
+        if 'auto_analysis_done' in st.session_state and st.session_state.auto_analysis_done:
+            
+            # Mostrar métricas do modelo
+            if 'auto_results' in st.session_state:
+                results = st.session_state.auto_results
+                best_model = max(results.items(), key=lambda x: x[1]['f1_score'])
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("🏆 Modelo", best_model[0])
+                with col2:
+                    st.metric("📊 Precisão", f"{best_model[1]['precision']:.1%}")
+                with col3:
+                    st.metric("🎯 F1-Score", f"{best_model[1]['f1_score']:.1%}")
+            
+            st.markdown("---")
+            
+            # Mostrar previsões
+            if 'auto_predictions' in st.session_state and st.session_state.auto_predictions:
+                predictions = st.session_state.auto_predictions
+                
+                st.subheader(f"🏆 Melhores Apostas Over 0.5 HT - {datetime.now().strftime('%d/%m/%Y')}")
+                
+                # Estatísticas resumo
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total de Apostas", len(predictions))
+                with col2:
+                    avg_conf = sum(p['confidence'] for p in predictions) / len(predictions) if predictions else 0
+                    st.metric("Confiança Média", f"{avg_conf:.1f}%")
+                with col3:
+                    high_conf = len([p for p in predictions if p['confidence'] > 70])
+                    st.metric("Alta Confiança (>70%)", high_conf)
+                
+                st.markdown("---")
+                
+                # Exibir cards estilo da imagem
+                for pred in predictions[:10]:  # Top 10
+                    display_prediction_card_with_averages(pred)
+            else:
+                st.info("🤷 Nenhuma aposta com boa confiança encontrada hoje")
 
 if __name__ == "__main__":
-    print("Sistema de Predição Inteligente com Backtesting 365 dias")
-    print("Para usar, chame main_backtest_analysis(seu_dataframe)")
+    main()
