@@ -137,7 +137,7 @@ def load_historical_data():
     
     return None, "❌ Nenhum arquivo de dados históricos encontrado"
 
-def collect_historical_data_smart(days=60, use_cached=True):
+def collect_historical_data_smart(days=730, use_cached=True):  # Mudado para 730 dias (2 anos)
     """Coleta inteligente de dados históricos"""
     
     # 1. Tentar carregar do cache primeiro
@@ -155,13 +155,27 @@ def collect_historical_data_smart(days=60, use_cached=True):
     # 2. Se não encontrou cache, coletar da API
     st.warning("⚠️ Coletando dados da API - pode ser lento...")
     
-    # Amostragem inteligente para reduzir requests
+    # Amostragem inteligente para 2 anos
     sample_days = []
-    # Últimos 15 dias completos
-    for i in range(15):
+    
+    # Últimos 30 dias completos
+    for i in range(30):
         sample_days.append(i + 1)
-    # Restante: amostragem
-    for i in range(15, days, 3):
+    
+    # Próximos 60 dias: a cada 2 dias
+    for i in range(30, 90, 2):
+        sample_days.append(i + 1)
+    
+    # Próximos 180 dias: a cada 3 dias
+    for i in range(90, 270, 3):
+        sample_days.append(i + 1)
+    
+    # Próximos 365 dias: a cada 5 dias
+    for i in range(270, 365, 5):
+        sample_days.append(i + 1)
+    
+    # Restante até 2 anos: a cada 7 dias
+    for i in range(365, days, 7):
         sample_days.append(i + 1)
     
     all_data = []
@@ -372,11 +386,11 @@ def prepare_advanced_features(df):
         team_stats[away_id]['goals_list'].append(ht_away_goals)
         team_stats[away_id]['over_list'].append(row['over_05'])
         
-        # Manter apenas últimos 10 jogos
+        # Manter apenas últimos 20 jogos (aumentado de 10)
         for team_id in [home_id, away_id]:
-            if len(team_stats[team_id]['goals_list']) > 10:
-                team_stats[team_id]['goals_list'] = team_stats[team_id]['goals_list'][-10:]
-                team_stats[team_id]['over_list'] = team_stats[team_id]['over_list'][-10:]
+            if len(team_stats[team_id]['goals_list']) > 20:
+                team_stats[team_id]['goals_list'] = team_stats[team_id]['goals_list'][-20:]
+                team_stats[team_id]['over_list'] = team_stats[team_id]['over_list'][-20:]
     
     return pd.DataFrame(features), team_stats
 
@@ -410,15 +424,22 @@ def train_complete_model(df, progress_callback=None):
         X_val_scaled = scaler.transform(X_val)
         X_test_scaled = scaler.transform(X_test)
         
-        # Modelos para testar
+        # Modelos para testar - otimizados para 2 anos de dados
         models = {
             'RandomForest': RandomForestClassifier(
-                n_estimators=200, max_depth=10, min_samples_split=5,
-                min_samples_leaf=3, random_state=42, n_jobs=-1
+                n_estimators=300,  # Aumentado de 200
+                max_depth=12,      # Aumentado de 10
+                min_samples_split=5,
+                min_samples_leaf=3,
+                random_state=42,
+                n_jobs=-1
             ),
             'GradientBoosting': GradientBoostingClassifier(
-                n_estimators=200, learning_rate=0.1, max_depth=6,
-                min_samples_split=5, random_state=42
+                n_estimators=300,  # Aumentado de 200
+                learning_rate=0.1,
+                max_depth=8,       # Aumentado de 6
+                min_samples_split=5,
+                random_state=42
             )
         }
         
@@ -664,14 +685,23 @@ def main():
         st.markdown("---")
         st.subheader("🧠 Configurações")
         
-        # Configurações de treinamento
+        # Configurações de treinamento - aumentado para 2 anos
         days_training = st.slider(
             "📊 Dias para treinamento:",
             min_value=30,
-            max_value=180,
-            value=60,
+            max_value=730,  # Mudado de 180 para 730 (2 anos)
+            value=730,      # Valor padrão: 2 anos
+            step=30,        # Passos de 30 em 30 dias
             help="Mais dias = modelo mais robusto, mas demora mais"
         )
+        
+        # Mostrar período selecionado
+        if days_training >= 365:
+            years = days_training / 365
+            st.info(f"📅 Período: **{years:.1f} anos**")
+        else:
+            months = days_training / 30
+            st.info(f"📅 Período: **{months:.0f} meses**")
         
         use_cache = st.checkbox(
             "💾 Usar dados em cache",
@@ -710,6 +740,14 @@ def main():
         
         if not conn_ok:
             st.warning("⚠️ API desconectada - apenas dados em cache disponíveis")
+        
+        # Aviso sobre treinamento com 2 anos
+        if days_training >= 365:
+            st.warning(f"""
+            ⚠️ **Atenção**: Treinar com {days_training} dias de dados pode demorar consideravelmente.
+            - Tempo estimado: 5-15 minutos
+            - Recomendado usar dados em cache se disponível
+            """)
         
         # Botão principal de treinamento
         if not st.session_state.training_in_progress:
