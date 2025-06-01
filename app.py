@@ -189,7 +189,40 @@ def extract_match_features(match):
     except Exception:
         return None
 
-def prepare_ultra_ht_features(df):
+def manual_oversample(X, y, random_state=42):
+    """
+    Balanceamento manual simples para substituir SMOTE
+    Replica amostras da classe minoritária
+    """
+    np.random.seed(random_state)
+    
+    # Contar classes
+    unique, counts = np.unique(y, return_counts=True)
+    max_count = max(counts)
+    
+    X_balanced = X.copy()
+    y_balanced = y.copy()
+    
+    for class_label, count in zip(unique, counts):
+        if count < max_count:
+            # Quantas amostras precisamos adicionar
+            samples_needed = max_count - count
+            
+            # Índices da classe minoritária
+            class_indices = np.where(y == class_label)[0]
+            
+            # Replicar amostras aleatoriamente
+            replicate_indices = np.random.choice(class_indices, samples_needed, replace=True)
+            
+            # Adicionar às listas
+            if hasattr(X, 'iloc'):  # DataFrame
+                X_balanced = pd.concat([X_balanced, X.iloc[replicate_indices]], ignore_index=True)
+            else:  # Array numpy
+                X_balanced = np.vstack([X_balanced, X[replicate_indices]])
+            
+            y_balanced = np.concatenate([y_balanced, y[replicate_indices]])
+    
+    return X_balanced, y_balanced
     """
     🎯 FEATURES ULTRA-ESPECÍFICAS PARA OVER 0.5 HT
     Máxima performance focada 100% no primeiro tempo
