@@ -1011,74 +1011,8 @@ def main():
                 # Mostrar previsões
                 st.subheader(f"🏆 {len(filtered_predictions)} Jogos Selecionados")
                 
-                # Opção de visualização
-                view_mode = st.radio("Modo de visualização:", ["Cards Detalhados", "Tabela Resumida"], horizontal=True)
-                
-                if view_mode == "Cards Detalhados":
-                    for pred in filtered_predictions[:10]:  # Top 10
-                        display_prediction_card_enhanced(pred)
-                else:
-                    # Criar tabela resumida com média da liga
-                    table_data = []
-                    for pred in filtered_predictions:
-                        try:
-                            hora = pred['kickoff'][11:16]
-                        except:
-                            hora = "--:--"
-                        
-                        # Calcular se está acima da média
-                        home_rate = pred['home_team_stats']['over_rate'] * 100
-                        away_rate = pred['away_team_stats']['over_rate'] * 100
-                        avg_teams = (home_rate + away_rate) / 2
-                        league_avg = pred['league_over_rate']
-                        
-                        # Indicador visual
-                        if avg_teams > league_avg * 1.1:
-                            indicator = "✅"
-                        elif avg_teams < league_avg * 0.9:
-                            indicator = "⚠️"
-                        else:
-                            indicator = "➖"
-                        
-                        table_data.append({
-                            'Hora': hora,
-                            'Jogo': f"{pred['home_team']} vs {pred['away_team']}",
-                            'Liga': pred['league'],
-                            'Média Liga': f"{league_avg:.0f}%",
-                            'Média Times': f"{avg_teams:.0f}%",
-                            'Status': indicator,
-                            'Previsão': pred['prediction'],
-                            'Confiança': f"{pred['confidence']:.0f}%"
-                        })
-                    
-                    df_table = pd.DataFrame(table_data)
-                    
-                    # Aplicar cores condicionais
-                    def color_confidence(val):
-                        num = int(val.strip('%'))
-                        if num >= 75:
-                            return 'background-color: #90EE90'
-                        elif num >= 65:
-                            return 'background-color: #87CEEB'
-                        else:
-                            return 'background-color: #FFE4B5'
-                    
-                    styled_df = df_table.style.applymap(
-                        color_confidence, 
-                        subset=['Confiança']
-                    )
-                    
-                    st.dataframe(styled_df, use_container_width=True, hide_index=True)
-                    
-                    # Legenda
-                    st.markdown("### 📊 Legenda")
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.write("✅ = Times acima da média da liga (>10%)")
-                    with col2:
-                        st.write("➖ = Times na média da liga (±10%)")
-                    with col3:
-                        st.write("⚠️ = Times abaixo da média da liga (<10%)")
+                for pred in filtered_predictions[:10]:  # Top 10
+                    display_prediction_card_enhanced(pred)
 
 if __name__ == "__main__":
     main()
