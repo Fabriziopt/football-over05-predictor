@@ -1,4 +1,104 @@
-import streamlit as st
+# Seletor de ligas
+        st.subheader("🏆 Selecionar Ligas para Análise")
+        
+        # Obter lista de ligas disponíveis nos dados
+        if 'df' not in st.session_state:
+            st.session_state.df = None
+            
+        # Carregar dados para ver ligas disponíveis
+        if st.session_state.df is None:
+            with st.spinner("📊 Verificando ligas disponíveis..."):
+                df_temp = collect_historical_data_smart(days=30, use_cached=True)
+                if not df_temp.empty:
+                    st.session_state.df = df_temp
+        
+        if st.session_state.df is not None and not st.session_state.df.empty:
+            # Agrupar ligas por país
+            leagues_by_country = {}
+            league_info = st.session_state.df.groupby(['country', 'league_id', 'league_name']).size().reset_index(name='matches')
+            
+            for _, row in league_info.iterrows():
+                country = row['country']
+                if country not in leagues_by_country:
+                    leagues_by_country[country] = []
+                leagues_by_country[country].append({
+                    'league_id': row['league_id'],
+                    'league_name': row['league_name'],
+                    'matches': row['matches']
+                })
+            
+            # Criar tabs por país
+            countries = sorted(leagues_by_country.keys())
+            
+            # Adicionar opção de selecionar todas
+            select_all = st.checkbox("📋 Selecionar TODAS as ligas", value=False)
+            
+            selected_leagues = []
+            
+            if not select_all:
+                # Tabs por país para seleção mais organizada
+                st.markdown("### 🌍 Escolha as ligas por país:")
+                
+                # Criar colunas para países
+                cols = st.columns(3)
+                col_idx = 0
+                
+                for country in countries:
+                    with cols[col_idx % 3]:
+                        st.markdown(f"**{country}**")
+                        for league in leagues_by_country[country]:
+                            if league['matches'] >= min_matches:
+                                if st.checkbox(
+                                    f"{league['league_name']} ({league['matches']} jogos)",
+                                    key=f"league_{league['league_id']}"
+                                ):
+                                    selected_leagues.append(league['league_id'])
+                    col_idx += 1
+                
+                # Mostrar ligas populares como sugestão
+                st.markdown("---")
+                st.markdown("### 🌟 Ligas Populares (Sugestão)")
+                
+                popular_leagues = {
+                    "Premier League": 39,
+                    "La Liga": 140,
+                    "Serie A": 135,
+                    "Bundesliga": 78,
+                    "Ligue 1": 61,
+                    "Primeira Liga": 94,
+                    "Eredivisie": 88,
+                    "Championship": 40,
+                    "Serie B": 136,
+                    "La Liga 2": 141
+                }
+                
+                col1, col2 = st.columns(2)
+                
+                with col1:
+                    if st.button("⚽ Selecionar Top 5 Europeias"):
+                        for league_name, league_id in list(popular_leagues.items())[:5]:
+                            st.session_state[f"league_{league_id}"] = True
+                        st.rerun()
+                
+                with col2:
+                    if st.button("🎯 Selecionar Ligas Portuguesas"):
+                        # IDs das ligas portuguesas (você precisa verificar os IDs corretos)
+                        portuguese_leagues = [94, 95, 96]  # Primeira Liga, Segunda Liga, etc
+                        for league_id in portuguese_leagues:
+                            st.session_state[f"league_{league_id}"] = True
+                        st.rerun()
+            
+            # Mostrar resumo das ligas selecionadas
+            if select_all:
+                total_selected = len(league_info[league_info['matches'] >= min_matches])
+                st.success(f"✅ Todas as {total_selected} ligas com {min_matches}+ jogos serão analisadas")
+            else:
+                if selected_leagues:
+                    st.info(f"📋 {len(selected_leagues)} ligas selecionadas para análise")
+                else:
+                    st.warning("⚠️ Nenhuma liga selecionada! Selecione pelo menos uma liga.")
+        
+        st.markdown("---")import streamlit as st
 import pandas as pd
 import numpy as np
 import requests
@@ -438,43 +538,7 @@ def train_model_for_league(league_df, league_id, league_name, progress_callback=
     except Exception as e:
         return None, f"❌ Erro ao treinar {league_name}: {str(e)}"
 
-def train_models_by_league(df, min_matches_per_league=50, progress_callback=None):
-    """Treina modelos separados para cada liga"""
-    
-    # Agrupar por liga
-    league_groups = df.groupby(['league_id', 'league_name', 'country'])
-    
-    league_models = {}
-    total_leagues = len(league_groups)
-    successful_leagues = 0
-    
-    progress_container = st.container()
-    
-    with progress_container:
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        for idx, ((league_id, league_name, country), league_df) in enumerate(league_groups):
-            # Atualizar progresso
-            progress = (idx + 1) / total_leagues
-            progress_bar.progress(progress)
-            status_text.text(f"🏆 Treinando modelo para {league_name} ({country})...")
-            
-            if len(league_df) < min_matches_per_league:
-                st.warning(f"⚠️ {league_name} ({country}): apenas {len(league_df)} jogos (mínimo: {min_matches_per_league})")
-                continue
-            
-            # Treinar modelo para esta liga
-            model_data, message = train_model_for_league(league_df, league_id, f"{league_name} ({country})")
-            
-            if model_data:
-                league_models[league_id] = model_data
-                successful_leagues += 1
-                st.success(f"✅ {league_name} ({country}): {len(league_df)} jogos | Over 0.5 HT: {model_data['league_over_rate']:.1%}")
-            else:
-                st.error(message)
-        
-        progress_bar.empty()
+_bar.empty()
         status_text.empty()
     
     return league_models, successful_leagues
@@ -686,28 +750,68 @@ def display_prediction_card_enhanced(pred):
             else:
                 st.warning(f"**{pred['confidence']:.1f}%**")
         
-        # Informações do jogo
-        col1, col2, col3 = st.columns(3)
+        # Informações do jogo com média da liga
+        col1, col2 = st.columns(2)
         with col1:
             st.write(f"🏆 **Liga:** {pred['league']} ({pred['country']})")
-            st.write(f"📊 **Média da Liga:** {pred['league_over_rate']:.1f}%")
+            try:
+                hora = pred['kickoff'][11:16]
+                st.write(f"🕐 **Horário:** {hora}")
+            except:
+                st.write(f"🕐 **Horário:** --:--")
         with col2:
+            # Mostrar média da liga com destaque
+            league_avg = pred['league_over_rate']
+            st.write(f"📊 **Média da Liga:** {league_avg:.1f}%")
+            
+            # Indicador se está acima ou abaixo da média
             home_rate = pred['home_team_stats']['over_rate'] * 100
-            st.write(f"🏠 **{pred['home_team']}:** {home_rate:.1f}%")
-            st.write(f"📈 **Jogos:** {pred['home_team_stats']['games']}")
-        with col3:
             away_rate = pred['away_team_stats']['over_rate'] * 100
-            st.write(f"✈️ **{pred['away_team']}:** {away_rate:.1f}%")
-            st.write(f"📈 **Jogos:** {pred['away_team_stats']['games']}")
+            avg_teams = (home_rate + away_rate) / 2
+            
+            if avg_teams > league_avg * 1.1:  # 10% acima da média
+                st.write("✅ **Acima da média da liga**")
+            elif avg_teams < league_avg * 0.9:  # 10% abaixo da média
+                st.write("⚠️ **Abaixo da média da liga**")
+            else:
+                st.write("➖ **Na média da liga**")
         
-        # Previsão
+        # Estatísticas dos times
+        st.markdown("### 📊 Estatísticas dos Times")
+        col1, col2 = st.columns(2)
+        with col1:
+            home_rate = pred['home_team_stats']['over_rate'] * 100
+            st.write(f"🏠 **{pred['home_team']}**")
+            st.write(f"- Over 0.5 HT: **{home_rate:.1f}%**")
+            st.write(f"- Jogos analisados: {pred['home_team_stats']['games']}")
+            st.write(f"- Casa: {pred['home_team_stats']['home_over_rate']*100:.1f}%")
+        with col2:
+            away_rate = pred['away_team_stats']['over_rate'] * 100
+            st.write(f"✈️ **{pred['away_team']}**")
+            st.write(f"- Over 0.5 HT: **{away_rate:.1f}%**")
+            st.write(f"- Jogos analisados: {pred['away_team_stats']['games']}")
+            st.write(f"- Fora: {pred['away_team_stats']['away_over_rate']*100:.1f}%")
+        
+        # Previsão com análise
+        st.markdown("### 🎯 Previsão do Modelo")
         if pred['prediction'] == 'OVER 0.5':
-            st.success(f"🎯 **Previsão:** {pred['prediction']} - {pred['confidence']:.1f}%")
+            st.success(f"**{pred['prediction']} HT** - Confiança: {pred['confidence']:.1f}%")
+            st.write(f"Probabilidade Over: **{pred['probability_over']:.1f}%** | Under: {pred['probability_under']:.1f}%")
         else:
-            st.info(f"🎯 **Previsão:** {pred['prediction']} - {pred['confidence']:.1f}%")
+            st.info(f"**{pred['prediction']} HT** - Confiança: {pred['confidence']:.1f}%")
+            st.write(f"Probabilidade Under: **{pred['probability_under']:.1f}%** | Over: {pred['probability_over']:.1f}%")
         
-        # Métricas do modelo
-        with st.expander("📊 Ver detalhes do modelo"):
+        # Critérios utilizados
+        with st.expander("🔍 Ver critérios da análise"):
+            st.write("**O modelo considera:**")
+            st.write("- ✅ Taxa histórica de Over 0.5 HT de cada time")
+            st.write("- ✅ Performance em casa vs fora")
+            st.write("- ✅ Média de Over 0.5 HT da liga")
+            st.write("- ✅ Número de jogos analisados (confiabilidade)")
+            st.write("- ✅ Diferença entre as taxas dos times")
+            st.write("- ✅ Combinação das taxas dos dois times")
+            
+            st.write("\n**Métricas do modelo desta liga:**")
             metrics = pred['model_metrics']
             col1, col2, col3, col4 = st.columns(4)
             with col1:
@@ -907,8 +1011,74 @@ def main():
                 # Mostrar previsões
                 st.subheader(f"🏆 {len(filtered_predictions)} Jogos Selecionados")
                 
-                for pred in filtered_predictions[:10]:  # Top 10
-                    display_prediction_card_enhanced(pred)
+                # Opção de visualização
+                view_mode = st.radio("Modo de visualização:", ["Cards Detalhados", "Tabela Resumida"], horizontal=True)
+                
+                if view_mode == "Cards Detalhados":
+                    for pred in filtered_predictions[:10]:  # Top 10
+                        display_prediction_card_enhanced(pred)
+                else:
+                    # Criar tabela resumida com média da liga
+                    table_data = []
+                    for pred in filtered_predictions:
+                        try:
+                            hora = pred['kickoff'][11:16]
+                        except:
+                            hora = "--:--"
+                        
+                        # Calcular se está acima da média
+                        home_rate = pred['home_team_stats']['over_rate'] * 100
+                        away_rate = pred['away_team_stats']['over_rate'] * 100
+                        avg_teams = (home_rate + away_rate) / 2
+                        league_avg = pred['league_over_rate']
+                        
+                        # Indicador visual
+                        if avg_teams > league_avg * 1.1:
+                            indicator = "✅"
+                        elif avg_teams < league_avg * 0.9:
+                            indicator = "⚠️"
+                        else:
+                            indicator = "➖"
+                        
+                        table_data.append({
+                            'Hora': hora,
+                            'Jogo': f"{pred['home_team']} vs {pred['away_team']}",
+                            'Liga': pred['league'],
+                            'Média Liga': f"{league_avg:.0f}%",
+                            'Média Times': f"{avg_teams:.0f}%",
+                            'Status': indicator,
+                            'Previsão': pred['prediction'],
+                            'Confiança': f"{pred['confidence']:.0f}%"
+                        })
+                    
+                    df_table = pd.DataFrame(table_data)
+                    
+                    # Aplicar cores condicionais
+                    def color_confidence(val):
+                        num = int(val.strip('%'))
+                        if num >= 75:
+                            return 'background-color: #90EE90'
+                        elif num >= 65:
+                            return 'background-color: #87CEEB'
+                        else:
+                            return 'background-color: #FFE4B5'
+                    
+                    styled_df = df_table.style.applymap(
+                        color_confidence, 
+                        subset=['Confiança']
+                    )
+                    
+                    st.dataframe(styled_df, use_container_width=True, hide_index=True)
+                    
+                    # Legenda
+                    st.markdown("### 📊 Legenda")
+                    col1, col2, col3 = st.columns(3)
+                    with col1:
+                        st.write("✅ = Times acima da média da liga (>10%)")
+                    with col2:
+                        st.write("➖ = Times na média da liga (±10%)")
+                    with col3:
+                        st.write("⚠️ = Times abaixo da média da liga (<10%)")
 
 if __name__ == "__main__":
     main()
