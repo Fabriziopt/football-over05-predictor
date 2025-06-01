@@ -110,6 +110,7 @@ def get_fixtures_cached(date_str):
 def load_historical_data():
     """Carrega dados históricos do arquivo local"""
     data_files = [
+        "data/historical_matches_seasonal.parquet",
         "data/historical_matches.parquet",
         "data/historical_matches.csv",
         "historical_matches.parquet",
@@ -138,8 +139,38 @@ def load_historical_data():
     
     return None, "❌ Nenhum arquivo encontrado"
 
-def collect_historical_data_smart(days=90, use_cached=True):
-    """Coleta inteligente de dados históricos - 90 dias é o ideal"""
+def get_seasonal_data_period():
+    """Calcula período ideal baseado na temporada - NOVO!"""
+    current_date = datetime.now()
+    current_month = current_date.month
+    current_year = current_date.year
+    
+    # Lógica sazonal para futebol europeu
+    if current_month >= 8:  # Agosto a Dezembro
+        # Estamos no início/meio da temporada
+        # Pegar temporada anterior completa + atual até agora
+        start_date = datetime(current_year - 1, 8, 1)  # Agosto do ano passado
+        days_back = (current_date - start_date).days
+    else:  # Janeiro a Julho
+        # Estamos no fim da temporada
+        # Pegar desde agosto do ano passado
+        start_date = datetime(current_year - 1, 8, 1)
+        days_back = (current_date - start_date).days
+    
+    # Garantir mínimo de 365 dias
+    days_back = max(days_back, 365)
+    
+    return days_back, start_date
+
+def collect_historical_data_smart(days=None, use_cached=True, seasonal=True):
+    """Coleta inteligente com opção sazonal - MELHORADO!"""
+    
+    # Se modo sazonal, calcular período ideal
+    if seasonal and days is None:
+        days, start_date = get_seasonal_data_period()
+        st.info(f"📅 Modo Sazonal: Buscando dados desde {start_date.strftime('%d/%m/%Y')} ({days} dias)")
+    elif days is None:
+        days = 365  # Padrão 1 ano
     
     if use_cached:
         df_cache, message = load_historical_data()
@@ -151,24 +182,48 @@ def collect_historical_data_smart(days=90, use_cached=True):
                 df_filtered = df_cache[df_cache['date'] >= cutoff_date].copy()
                 
                 if len(df_filtered) > 0:
-                    return df_filtered
+                    # Verificar se temos dados suficientes
+                    actual_days = (df_filtered['date'].max() - df_filtered['date'].min()).days
+                    if actual_days >= (days * 0.7):  # 70% do período desejado
+                        st.success(f"✅ Cache com {len(df_filtered)} jogos ({actual_days} dias)")
+                        return df_filtered
+                    else:
+                        st.warning(f"⚠️ Cache insuficiente: apenas {actual_days} dias")
     
-    # Se não tem cache, buscar da API
-    st.warning("⚠️ Coletando dados da API...")
+    # Se não tem cache adequado, buscar da API
+    st.warning("⚠️ Coletando dados históricos completos da API...")
     
+    # Para períodos longos, amostragem inteligente
     sample_days = []
-    for i in range(min(30, days)):
+    
+    # Últimos 60 dias completos (jogos recentes)
+    for i in range(min(60, days)):
         sample_days.append(i + 1)
-    if days > 30:
-        for i in range(30, days, 2):
+    
+    # 60-180 dias: a cada 3 dias
+    if days > 60:
+        for i in range(60, min(180, days), 3):
+            sample_days.append(i + 1)
+    
+    # 180-365 dias: a cada 5 dias
+    if days > 180:
+        for i in range(180, min(365, days), 5):
+            sample_days.append(i + 1)
+    
+    # Mais de 1 ano: a cada 7 dias
+    if days > 365:
+        for i in range(365, days, 7):
             sample_days.append(i + 1)
     
     all_data = []
     progress_bar = st.progress(0)
+    status_text = st.empty()
     
     for idx, day_offset in enumerate(sample_days):
         date = datetime.now() - timedelta(days=day_offset)
         date_str = date.strftime('%Y-%m-%d')
+        
+        status_text.text(f"📅 Coletando: {date_str}")
         
         try:
             fixtures = get_fixtures_cached(date_str)
@@ -188,8 +243,23 @@ def collect_historical_data_smart(days=90, use_cached=True):
             time.sleep(0.3)
     
     progress_bar.empty()
+    status_text.empty()
     
-    return pd.DataFrame(all_data)
+    if all_data:
+        df_new = pd.DataFrame(all_data)
+        
+        # Salvar cache atualizado
+        try:
+            cache_file = "data/historical_matches_seasonal.parquet"
+            os.makedirs("data", exist_ok=True)
+            df_new.to_parquet(cache_file)
+            st.success(f"💾 Cache sazonal salvo com {len(df_new)} jogos")
+        except:
+            pass
+        
+        return df_new
+    
+    return pd.DataFrame()
 
 def extract_match_features(match):
     """Extrai features básicas do jogo"""
@@ -778,13 +848,32 @@ def main():
         st.markdown("---")
         
         # Configurações otimizadas
-        days_training = st.slider(
-            "📊 Dias para treinamento:",
-            min_value=60,
-            max_value=120,
-            value=90,
-            help="90 dias é o ideal para máxima precisão"
+        st.markdown("### ⚙️ Configurações")
+        
+        data_mode = st.radio(
+            "📊 Modo de dados:",
+            ["Sazonal Inteligente", "Período Fixo"],
+            index=0,
+            help="Sazonal: Ajusta automaticamente baseado na época do ano"
         )
+        
+        if data_mode == "Período Fixo":
+            days_training = st.slider(
+                "📅 Dias para treinamento:",
+                min_value=90,
+                max_value=730,
+                value=365,
+                step=30,
+                help="365 dias (1 ano) garante dados em qualquer época"
+            )
+        else:
+            days_training = None  # Modo sazonal calcula automaticamente
+            st.info("""
+            📅 **Modo Sazonal Ativo:**
+            - Agosto-Dezembro: Busca temporada anterior completa
+            - Janeiro-Julho: Busca desde agosto anterior
+            - Garante dados para início de temporada!
+            """)
         
         min_confidence = st.slider(
             "🎯 Confiança mínima:",
@@ -824,7 +913,12 @@ def main():
         
         if st.button("🚀 TREINAR SISTEMA DE ALTA PRECISÃO", type="primary", use_container_width=True):
             with st.spinner("📥 Carregando dados..."):
-                df = collect_historical_data_smart(days=days_training, use_cached=use_cache)
+                seasonal = (data_mode == "Sazonal Inteligente")
+                df = collect_historical_data_smart(
+                    days=days_training, 
+                    use_cached=use_cache,
+                    seasonal=seasonal
+                )
             
             if df.empty:
                 st.error("❌ Sem dados suficientes")
