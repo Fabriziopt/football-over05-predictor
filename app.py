@@ -11,8 +11,8 @@ from sklearn.ensemble import RandomForestClassifier, VotingClassifier
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from sklearn.preprocessing import StandardScaler
 from sklearn.calibration import CalibratedClassifierCV
-import xgboost as xgb
-import lightgbm as lgb
+# XGBoost e LightGBM não disponíveis no Streamlit Cloud
+# Vamos usar apenas RandomForest e GradientBoosting
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -452,44 +452,42 @@ def train_ensemble_model(league_df, league_id, league_name):
         # Validação temporal - CRÍTICO!
         tscv = TimeSeriesSplit(n_splits=5)
         
-        # Modelos base
+        # Modelos base disponíveis no Streamlit
         rf_model = RandomForestClassifier(
+            n_estimators=500,  # Aumentado para compensar
+            max_depth=15,
+            min_samples_split=10,
+            min_samples_leaf=5,
+            max_features='sqrt',
+            random_state=42,
+            n_jobs=-1
+        )
+        
+        gb_model = GradientBoostingClassifier(
             n_estimators=300,
-            max_depth=12,
+            max_depth=8,
+            learning_rate=0.05,
+            subsample=0.8,
+            random_state=42
+        )
+        
+        # Extra trees para diversidade
+        from sklearn.ensemble import ExtraTreesClassifier
+        et_model = ExtraTreesClassifier(
+            n_estimators=300,
+            max_depth=15,
             min_samples_split=10,
             min_samples_leaf=5,
             random_state=42,
             n_jobs=-1
         )
         
-        xgb_model = xgb.XGBClassifier(
-            n_estimators=300,
-            max_depth=8,
-            learning_rate=0.05,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=42,
-            use_label_encoder=False,
-            eval_metric='logloss'
-        )
-        
-        lgb_model = lgb.LGBMClassifier(
-            n_estimators=300,
-            max_depth=8,
-            learning_rate=0.05,
-            num_leaves=31,
-            subsample=0.8,
-            colsample_bytree=0.8,
-            random_state=42,
-            verbose=-1
-        )
-        
-        # Ensemble voting
+        # Ensemble voting com 3 modelos
         ensemble = VotingClassifier(
             estimators=[
                 ('rf', rf_model),
-                ('xgb', xgb_model),
-                ('lgb', lgb_model)
+                ('gb', gb_model),
+                ('et', et_model)
             ],
             voting='soft'
         )
@@ -534,13 +532,17 @@ def train_ensemble_model(league_df, league_id, league_name):
         rf_model.fit(X_scaled, y)
         rf_importance = rf_model.feature_importances_
         
-        # XGB importance
-        xgb_model.fit(X_scaled, y)
-        xgb_importance = xgb_model.feature_importances_
+        # GB importance
+        gb_model.fit(X_scaled, y)
+        gb_importance = gb_model.feature_importances_
         
-        # Média
+        # ET importance
+        et_model.fit(X_scaled, y)
+        et_importance = et_model.feature_importances_
+        
+        # Média dos 3 modelos
         for i, col in enumerate(feature_cols):
-            feature_importance[col] = (rf_importance[i] + xgb_importance[i]) / 2
+            feature_importance[col] = (rf_importance[i] + gb_importance[i] + et_importance[i]) / 3
         
         # Top features
         top_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)[:5]
@@ -805,7 +807,7 @@ def main():
         with col1:
             st.info("""
             **📊 Sistema Ensemble:**
-            - RandomForest + XGBoost + LightGBM
+            - RandomForest + GradientBoosting + ExtraTrees
             - Validação temporal (não aleatória)
             - Calibração de probabilidades
             - Features H2H e forma recente
