@@ -153,7 +153,7 @@ def load_historical_data():
     
     return None, "❌ Nenhum arquivo de dados históricos encontrado"
 
-def collect_historical_data_smart(days=730, use_cached=True):  # Mudado para 730 dias (2 anos)
+def collect_historical_data_smart(days=730, use_cached=True):
     """Coleta inteligente de dados históricos"""
     
     # 1. Tentar carregar do cache primeiro
@@ -334,15 +334,10 @@ def prepare_advanced_features(df):
         team_stats[team_id] = {
             'games': 0, 'over_05': 0, 'goals_scored': 0, 'goals_conceded': 0,
             'home_games': 0, 'home_over': 0, 'away_games': 0, 'away_over': 0,
-            'goals_list': [], 'over_list': [],
-            # Novas estatísticas para períodos diferentes
-            'last_10_games': {'over': 0, 'total': 0},
-            'last_30_days': {'over': 0, 'total': 0, 'goals': 0},
-            'last_90_days': {'over': 0, 'total': 0, 'goals': 0}
+            'goals_list': [], 'over_list': []
         }
     
     features = []
-    current_date = pd.to_datetime(df['date'].max()) if 'date' in df.columns else pd.Timestamp.now()
     
     for idx, row in df.iterrows():
         home_id = row['home_team_id']
@@ -352,169 +347,13 @@ def prepare_advanced_features(df):
         home_stats = team_stats[home_id]
         away_stats = team_stats[away_id]
         
-        # Calcular rates básicas (longo prazo)
+        # Calcular rates básicas
         home_over_rate = home_stats['over_05'] / max(home_stats['games'], 1)
         home_avg_goals = home_stats['goals_scored'] / max(home_stats['games'], 1)
         home_home_over_rate = home_stats['home_over'] / max(home_stats['home_games'], 1)
         
         away_over_rate = away_stats['over_05'] / max(away_stats['games'], 1)
         away_avg_goals = away_stats['goals_scored'] / max(away_stats['games'], 1)
-        away_away_over_rate = away_stats['away_over'] / max(away_stats['away_games'], 1)
-        
-        # Features de curto prazo (últimos 10 jogos)
-        home_recent_10_rate = home_stats['last_10_games']['over'] / max(home_stats['last_10_games']['total'], 1)
-        away_recent_10_rate = away_stats['last_10_games']['over'] / max(away_stats['last_10_games']['total'], 1)
-        
-        # Features de médio prazo (últimos 30 e 90 dias)
-        home_30d_rate = home_stats['last_30_days']['over'] / max(home_stats['last_30_days']['total'], 1)
-        away_30d_rate = away_stats['last_30_days']['over'] / max(away_stats['last_30_days']['total'], 1)
-        
-        home_90d_rate = home_stats['last_90_days']['over'] / max(home_stats['last_90_days']['total'], 1)
-        away_90d_rate = away_stats['last_90_days']['over'] / max(away_stats['last_90_days']['total'], 1)
-        
-        # Features de liga
-        league_id = row['league_id']
-        league_mask = df['league_id'] == league_id
-        league_data = df.loc[league_mask & (df.index < idx)]
-        league_over_rate = league_data['over_05'].mean() if len(league_data) > 0 else 0.5
-        
-        # Features avançadas - Consistência
-        if len(home_stats['goals_list']) > 1:
-            home_goals_std = np.std(home_stats['goals_list'])
-            home_goals_mean = np.mean(home_stats['goals_list'])
-            home_consistency = 1 / (1 + home_goals_std / (home_goals_mean + 0.01))
-        else:
-            home_consistency = 0.5
-        
-        if len(away_stats['goals_list']) > 1:
-            away_goals_std = np.std(away_stats['goals_list'])
-            away_goals_mean = np.mean(away_stats['goals_list'])
-            away_consistency = 1 / (1 + away_goals_std / (away_goals_mean + 0.01))
-        else:
-            away_consistency = 0.5
-        
-        # Features avançadas - Momentum
-        home_recent = home_stats['over_list'][-5:] if len(home_stats['over_list']) >= 5 else home_stats['over_list']
-        away_recent = away_stats['over_list'][-5:] if len(away_stats['over_list']) >= 5 else away_stats['over_list']
-        
-        home_momentum = sum(home_recent) / len(home_recent) if home_recent else home_over_rate
-        away_momentum = sum(away_recent) / len(away_recent) if away_recent else away_over_rate
-        
-        # Criar features - agora com múltiplos horizontes temporais
-        feature_row = {
-            # Features básicas (longo prazo)
-            'home_over_rate': home_over_rate,
-            'home_avg_goals': home_avg_goals,
-            'home_home_over_rate': home_home_over_rate,
-            'away_over_rate': away_over_rate,
-            'away_avg_goals': away_avg_goals,
-            'away_away_over_rate': away_away_over_rate,
-            'league_over_rate': league_over_rate,
-            'combined_over_rate': (home_over_rate + away_over_rate) / 2,
-            'combined_goals': home_avg_goals + away_avg_goals,
-            
-            # Features de curto prazo (forma recente)
-            'home_recent_10_rate': home_recent_10_rate,
-            'away_recent_10_rate': away_recent_10_rate,
-            'combined_recent_10': (home_recent_10_rate + away_recent_10_rate) / 2,
-            
-            # Features de médio prazo
-            'home_30d_rate': home_30d_rate,
-            'away_30d_rate': away_30d_rate,
-            'home_90d_rate': home_90d_rate,
-            'away_90d_rate': away_90d_rate,
-            
-            # Diferenças entre períodos (detecta mudanças)
-            'home_form_change': home_recent_10_rate - home_over_rate,
-            'away_form_change': away_recent_10_rate - away_over_rate,
-            
-            # Features avançadas
-            'home_consistency': home_consistency,
-            'away_consistency': away_consistency,
-            'consistency_avg': (home_consistency + away_consistency) / 2,
-            'consistency_diff': abs(home_consistency - away_consistency),
-            'home_momentum': home_momentum,
-            'away_momentum': away_momentum,
-            'momentum_avg': (home_momentum + away_momentum) / 2,
-            'momentum_diff': abs(home_momentum - away_momentum),
-            'combined_strength': (home_over_rate * home_consistency + away_over_rate * away_consistency) / 2,
-            
-            # Target
-            'target': row['over_05']
-        }
-        
-        features.append(feature_row)
-        
-        # Atualizar estatísticas
-        ht_home_goals = row.get('ht_home_goals', row.get('ht_home', 0))
-        ht_away_goals = row.get('ht_away_goals', row.get('ht_away', 0))
-        
-        # Calcular dias desde o jogo (para estatísticas temporais)
-        if 'date' in row:
-            game_date = pd.to_datetime(row['date'])
-            days_ago = (current_date - game_date).days
-        else:
-            days_ago = 0
-        
-        # Home team - estatísticas gerais
-        team_stats[home_id]['games'] += 1
-        team_stats[home_id]['over_05'] += row['over_05']
-        team_stats[home_id]['goals_scored'] += ht_home_goals
-        team_stats[home_id]['goals_conceded'] += ht_away_goals
-        team_stats[home_id]['home_games'] += 1
-        team_stats[home_id]['home_over'] += row['over_05']
-        team_stats[home_id]['goals_list'].append(ht_home_goals)
-        team_stats[home_id]['over_list'].append(row['over_05'])
-        
-        # Últimos 10 jogos
-        if len(team_stats[home_id]['over_list']) <= 10:
-            team_stats[home_id]['last_10_games']['over'] += row['over_05']
-            team_stats[home_id]['last_10_games']['total'] += 1
-        
-        # Estatísticas temporais
-        if days_ago <= 30:
-            team_stats[home_id]['last_30_days']['over'] += row['over_05']
-            team_stats[home_id]['last_30_days']['total'] += 1
-            team_stats[home_id]['last_30_days']['goals'] += ht_home_goals
-        
-        if days_ago <= 90:
-            team_stats[home_id]['last_90_days']['over'] += row['over_05']
-            team_stats[home_id]['last_90_days']['total'] += 1
-            team_stats[home_id]['last_90_days']['goals'] += ht_home_goals
-        
-        # Away team - mesmas atualizações
-        team_stats[away_id]['games'] += 1
-        team_stats[away_id]['over_05'] += row['over_05']
-        team_stats[away_id]['goals_scored'] += ht_away_goals
-        team_stats[away_id]['goals_conceded'] += ht_home_goals
-        team_stats[away_id]['away_games'] += 1
-        team_stats[away_id]['away_over'] += row['over_05']
-        team_stats[away_id]['goals_list'].append(ht_away_goals)
-        team_stats[away_id]['over_list'].append(row['over_05'])
-        
-        # Últimos 10 jogos
-        if len(team_stats[away_id]['over_list']) <= 10:
-            team_stats[away_id]['last_10_games']['over'] += row['over_05']
-            team_stats[away_id]['last_10_games']['total'] += 1
-        
-        # Estatísticas temporais
-        if days_ago <= 30:
-            team_stats[away_id]['last_30_days']['over'] += row['over_05']
-            team_stats[away_id]['last_30_days']['total'] += 1
-            team_stats[away_id]['last_30_days']['goals'] += ht_away_goals
-        
-        if days_ago <= 90:
-            team_stats[away_id]['last_90_days']['over'] += row['over_05']
-            team_stats[away_id]['last_90_days']['total'] += 1
-            team_stats[away_id]['last_90_days']['goals'] += ht_away_goals
-        
-        # Manter apenas últimos 20 jogos (aumentado de 10)
-        for team_id in [home_id, away_id]:
-            if len(team_stats[team_id]['goals_list']) > 20:
-                team_stats[team_id]['goals_list'] = team_stats[team_id]['goals_list'][-20:]
-                team_stats[team_id]['over_list'] = team_stats[team_id]['over_list'][-20:]
-    
-    return pd.DataFrame(features), team_stats_scored'] / max(away_stats['games'], 1)
         away_away_over_rate = away_stats['away_over'] / max(away_stats['away_games'], 1)
         
         # Features de liga
