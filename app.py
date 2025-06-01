@@ -10,23 +10,8 @@ from sklearn.model_selection import train_test_split, TimeSeriesSplit
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, VotingClassifier
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, roc_auc_score
 from sklearn.preprocessing import StandardScaler
-from imblearn.over_sampling import SMOTE
-from imblearn.combine import SMOTEENN
 import warnings
 warnings.filterwarnings('ignore')
-
-# Tentar importar modelos avançados
-try:
-    import lightgbm as lgb
-    LIGHTGBM_AVAILABLE = True
-except ImportError:
-    LIGHTGBM_AVAILABLE = False
-
-try:
-    import xgboost as xgb
-    XGBOOST_AVAILABLE = True
-except ImportError:
-    XGBOOST_AVAILABLE = False
 
 # Configuração da página
 st.set_page_config(
@@ -526,18 +511,11 @@ def train_maximum_performance_model(df):
         
         st.info(f"📊 Split temporal: {len(X_train)} treino, {len(X_val)} validação, {len(X_test)} teste")
         
-        # 3. BALANCEAMENTO DE CLASSES COM SMOTEENN
-        st.info("⚖️ Aplicando balanceamento avançado (SMOTEENN)...")
+        # 3. BALANCEAMENTO MANUAL DE CLASSES
+        st.info("⚖️ Aplicando balanceamento de classes...")
         
-        try:
-            smoteenn = SMOTEENN(random_state=42)
-            X_train_balanced, y_train_balanced = smoteenn.fit_resample(X_train, y_train)
-            st.success(f"✅ Balanceamento: {len(X_train)} → {len(X_train_balanced)} amostras")
-        except:
-            # Fallback para SMOTE simples
-            smote = SMOTE(random_state=42)
-            X_train_balanced, y_train_balanced = smote.fit_resample(X_train, y_train)
-            st.info(f"📊 SMOTE aplicado: {len(X_train)} → {len(X_train_balanced)} amostras")
+        X_train_balanced, y_train_balanced = manual_oversample(X_train, y_train, random_state=42)
+        st.success(f"✅ Balanceamento: {len(X_train)} → {len(X_train_balanced)} amostras")
         
         # 4. PADRONIZAÇÃO
         scaler = StandardScaler()
@@ -545,27 +523,26 @@ def train_maximum_performance_model(df):
         X_val_scaled = scaler.transform(X_val)
         X_test_scaled = scaler.transform(X_test)
         
-        # 5. ENSEMBLE MÁXIMA PERFORMANCE
-        st.info("🚀 Treinando ensemble de máxima performance...")
+        # 5. ENSEMBLE MÁXIMA PERFORMANCE - Apenas bibliotecas padrão
+        st.info("🚀 Treinando ensemble otimizado...")
         
         models = {}
         
         # RandomForest otimizado
         models['RandomForest'] = RandomForestClassifier(
-            n_estimators=500,      # Mais árvores
+            n_estimators=400,      # Muitas árvores
             max_depth=15,          # Mais profundo
             min_samples_split=2,   # Mais flexível
             min_samples_leaf=1,    # Mais flexível
             max_features='sqrt',   # Otimizado
             bootstrap=True,
-            oob_score=True,
             random_state=42,
             n_jobs=-1
         )
         
         # GradientBoosting otimizado
         models['GradientBoosting'] = GradientBoostingClassifier(
-            n_estimators=500,      # Mais estimadores
+            n_estimators=400,      # Mais estimadores
             learning_rate=0.05,    # Learning rate menor
             max_depth=8,           # Mais profundo
             min_samples_split=2,   # Mais flexível
@@ -574,32 +551,18 @@ def train_maximum_performance_model(df):
             random_state=42
         )
         
-        # LightGBM se disponível
-        if LIGHTGBM_AVAILABLE:
-            models['LightGBM'] = lgb.LGBMClassifier(
-                n_estimators=500,
-                learning_rate=0.05,
-                max_depth=10,
-                num_leaves=100,
-                min_child_samples=5,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                random_state=42,
-                verbose=-1
-            )
-        
-        # XGBoost se disponível  
-        if XGBOOST_AVAILABLE:
-            models['XGBoost'] = xgb.XGBClassifier(
-                n_estimators=500,
-                learning_rate=0.05,
-                max_depth=8,
-                min_child_weight=1,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                random_state=42,
-                eval_metric='logloss'
-            )
+        # Extra Trees para diversidade
+        from sklearn.ensemble import ExtraTreesClassifier
+        models['ExtraTrees'] = ExtraTreesClassifier(
+            n_estimators=300,
+            max_depth=12,
+            min_samples_split=3,
+            min_samples_leaf=2,
+            max_features='sqrt',
+            bootstrap=False,
+            random_state=42,
+            n_jobs=-1
+        )
         
         # 6. TREINAR E AVALIAR TODOS OS MODELOS
         results = {}
@@ -855,9 +818,9 @@ def main():
         st.success("""
         ✅ **40+ Features HT-Específicas**
         ✅ **Validação Temporal**
-        ✅ **Balanceamento SMOTEENN**
+        ✅ **Balanceamento de Classes**
         ✅ **Ensemble Voting**
-        ✅ **LightGBM + XGBoost**
+        ✅ **RandomForest + GB + ExtraTrees**
         ✅ **Otimização Completa**
         """)
         
@@ -973,9 +936,9 @@ def main():
         
         **🧠 Técnicas Avançadas:**
         - ✅ Validação Temporal (não aleatória)
-        - ✅ Balanceamento SMOTEENN
+        - ✅ Balanceamento de Classes
         - ✅ Ensemble Voting Classifier
-        - ✅ LightGBM + XGBoost + RF + GB
+        - ✅ RandomForest + GradientBoosting + ExtraTrees
         - ✅ Otimização de hiperparâmetros
         """)
         
