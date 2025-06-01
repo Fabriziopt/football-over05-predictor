@@ -338,7 +338,17 @@ def collect_historical_data_smart(days=None, use_cached=True, seasonal=True, inc
                 else:
                     st.error("❌ Nenhuma liga foi treinada com sucesso!")
                     
-            except Exception as e:
+try:
+    # Seu código original que pode gerar exceção
+    results_df, stats = run_backtesting(
+        st.session_state.league_models,
+        historical_df,
+        days_back=days_back,
+        min_confidence=min_confidence_backtest
+    )
+except Exception as e:
+    # Tratamento de erro adequado
+    st.error(f"❌ Erro ao executar backtesting: {str(e)}")
                 st.error(f"❌ Erro geral no treinamento: {str(e)}")
                 st.error("Detalhes técnicos:")
                 st.code(traceback.format_exc())
