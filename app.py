@@ -12,8 +12,6 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 from sklearn.preprocessing import StandardScaler
 from sklearn.calibration import CalibratedClassifierCV
 from scipy.stats import poisson
-import plotly.graph_objects as go
-import plotly.express as px
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -683,29 +681,14 @@ def display_smart_prediction(pred):
         
         st.markdown("---")
 
-def create_simple_chart(data, chart_type='bar'):
-    """Cria gráficos simples usando matplotlib quando Plotly falha"""
-    try:
-        import matplotlib.pyplot as plt
-        
-        fig, ax = plt.subplots(figsize=(10, 6))
-        
-        if chart_type == 'bar':
-            ax.bar(range(len(data)), [d['value'] for d in data])
-            ax.set_xticks(range(len(data)))
-            ax.set_xticklabels([d['name'] for d in data], rotation=45)
-        
-        plt.tight_layout()
-        st.pyplot(fig)
-        plt.close()
-        
-    except:
-        # Fallback para tabela simples
-        df = pd.DataFrame(data)
-        st.dataframe(df, use_container_width=True)
+def create_simple_bar_chart(data, title):
+    """Cria gráfico de barras simples usando st.bar_chart"""
+    df = pd.DataFrame(data)
+    st.subheader(title)
+    st.bar_chart(df.set_index('name')['value'])
 
 def display_league_summary(league_models):
-    """Exibe resumo das ligas com gráficos alternativos"""
+    """Exibe resumo das ligas com visualizações simples"""
     
     st.header("📊 Análise das Ligas")
     
@@ -722,63 +705,69 @@ def display_league_summary(league_models):
     
     df_leagues = pd.DataFrame(league_data)
     
-    try:
-        # Tentar usar Plotly
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            # Gráfico de barras - Taxa Over 0.5 HT por Liga
-            fig = px.bar(df_leagues.sort_values('Over 0.5 HT %', ascending=False).head(15), 
-                         x='Liga', y='Over 0.5 HT %',
-                         title='Top 15 Ligas - Taxa Over 0.5 HT',
-                         color='Over 0.5 HT %',
-                         color_continuous_scale='RdYlGn')
-            fig.update_layout(xaxis_tickangle=-45)
-            st.plotly_chart(fig, use_container_width=True)
-        
-        with col2:
-            # Scatter plot - Acurácia vs F1-Score
-            fig = px.scatter(df_leagues, x='Acurácia', y='F1-Score',
-                            size='Jogos', hover_name='Liga',
-                            title='Performance dos Modelos por Liga',
-                            labels={'size': 'Número de Jogos'})
-            fig.add_hline(y=75, line_dash="dash", line_color="red", 
-                         annotation_text="Mínimo Recomendado")
-            st.plotly_chart(fig, use_container_width=True)
-            
-    except Exception as e:
-        st.warning("⚠️ Erro nos gráficos Plotly. Mostrando dados em tabela.")
-        
-        # Mostrar top ligas sem gráfico
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            st.subheader("📈 Top 15 Ligas - Over 0.5 HT")
-            top_leagues = df_leagues.sort_values('Over 0.5 HT %', ascending=False).head(15)
-            st.dataframe(top_leagues[['Liga', 'Over 0.5 HT %']], use_container_width=True)
-        
-        with col2:
-            st.subheader("🎯 Performance dos Modelos")
-            performance = df_leagues[['Liga', 'Acurácia', 'F1-Score', 'Jogos']]
-            st.dataframe(performance, use_container_width=True)
+    # Visualizações em colunas
+    col1, col2 = st.columns(2)
     
-    # Tabela resumo sempre funciona
-    st.subheader("📋 Resumo Detalhado")
+    with col1:
+        st.subheader("📈 Top 10 Ligas - Taxa Over 0.5 HT")
+        top_leagues = df_leagues.sort_values('Over 0.5 HT %', ascending=False).head(10)
+        chart_data = top_leagues.set_index('Liga')['Over 0.5 HT %']
+        st.bar_chart(chart_data)
+        
+        # Mostrar dados numéricos
+        st.write("**Valores exatos:**")
+        for idx, row in top_leagues.iterrows():
+            st.write(f"• {row['Liga']}: {row['Over 0.5 HT %']:.1f}%")
+    
+    with col2:
+        st.subheader("🎯 Performance dos Modelos")
+        performance_data = df_leagues[['Liga', 'Acurácia', 'F1-Score']].set_index('Liga')
+        st.line_chart(performance_data)
+        
+        # Estatísticas
+        avg_acc = df_leagues['Acurácia'].mean()
+        avg_f1 = df_leagues['F1-Score'].mean()
+        st.write(f"**Acurácia Média:** {avg_acc:.1f}%")
+        st.write(f"**F1-Score Médio:** {avg_f1:.1f}%")
+    
+    # Tabela resumo completa
+    st.subheader("📋 Resumo Detalhado de Todas as Ligas")
     
     df_display = df_leagues.sort_values('F1-Score', ascending=False)
     df_display = df_display.round(1)
     
-    # Aplicar estilo se possível
+    # Adicionar cores baseadas em performance
+    def color_performance(val):
+        if val >= 80:
+            return 'background-color: #90EE90'  # Verde claro
+        elif val >= 70:
+            return 'background-color: #FFFFE0'  # Amarelo claro
+        else:
+            return 'background-color: #FFB6C1'  # Rosa claro
+    
     try:
-        df_styled = df_display.style.format({
-            'Over 0.5 HT %': '{:.1f}%',
-            'F1-Score': '{:.1f}%',
-            'Acurácia': '{:.1f}%'
-        }).background_gradient(subset=['F1-Score'], cmap='RdYlGn', vmin=60, vmax=90)
-        
-        st.dataframe(df_styled, use_container_width=True)
+        # Tentar aplicar estilo
+        styled_df = df_display.style.applymap(color_performance, subset=['F1-Score', 'Acurácia'])
+        st.dataframe(styled_df, use_container_width=True)
     except:
+        # Fallback para tabela simples
         st.dataframe(df_display, use_container_width=True)
+    
+    # Análise de qualidade
+    st.subheader("📊 Análise de Qualidade dos Modelos")
+    
+    high_quality = len(df_leagues[df_leagues['F1-Score'] >= 80])
+    medium_quality = len(df_leagues[(df_leagues['F1-Score'] >= 70) & (df_leagues['F1-Score'] < 80)])
+    low_quality = len(df_leagues[df_leagues['F1-Score'] < 70])
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        st.metric("🟢 Alta Qualidade (F1 ≥ 80%)", high_quality)
+    with col2:
+        st.metric("🟡 Média Qualidade (F1 70-80%)", medium_quality)
+    with col3:
+        st.metric("🔴 Baixa Qualidade (F1 < 70%)", low_quality)
 
 def main():
     st.title("⚽ HT Goals AI Ultimate - Sistema Completo")
@@ -1035,14 +1024,13 @@ def main():
         df_features = pd.DataFrame(top_global_features, columns=['Feature', 'Importância'])
         df_features['Feature'] = df_features['Feature'].str.replace('_', ' ').str.title()
         
-        try:
-            # Tentar gráfico Plotly
-            fig = px.bar(df_features, x='Importância', y='Feature', orientation='h',
-                        title='Top 10 Features Globais')
-            st.plotly_chart(fig, use_container_width=True)
-        except:
-            # Fallback para tabela
-            st.dataframe(df_features, use_container_width=True)
+        # Gráfico de barras simples
+        chart_data = df_features.set_index('Feature')['Importância']
+        st.bar_chart(chart_data)
+        
+        # Tabela com valores
+        st.subheader("📊 Valores Detalhados das Features")
+        st.dataframe(df_features, use_container_width=True)
 
 if __name__ == "__main__":
     main()
