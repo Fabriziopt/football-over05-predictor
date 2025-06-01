@@ -744,6 +744,8 @@ def get_league_context(league_name):
         'Liga MX': 72,
         'MLS': 70,
         'Brasileirão': 68,
+        'Brasileirão Série A': 68,
+        'Brasileirão Série B': 65,
         'Champions League': 58,
         'Europa League': 62,
         'Copa Libertadores': 65,
@@ -980,6 +982,66 @@ def analyze_leagues(df):
     
     return league_analysis
 
+def display_prediction_card_with_averages(pred):
+    """Exibe card de previsão com médias da liga e do sistema"""
+    
+    # Obter contexto da liga
+    league_context = get_league_context(pred['league'])
+    
+    # Container principal do card
+    with st.container():
+        # Estilizar como um card
+        card_col1, card_col2 = st.columns([5, 1])
+        
+        with card_col1:
+            st.markdown(f"### ⚽ {pred['home_team']} vs {pred['away_team']}")
+            
+            # Informações do jogo
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write(f"🏆 **Liga:** {pred['league']} ({pred['country']})")
+            with col2:
+                st.write(f"🕐 **Horário PT:** {pred['kickoff'][11:16]}")
+        
+        with card_col2:
+            # Badge de confiança
+            if pred['confidence'] > 80:
+                st.success(f"**{pred['confidence']:.1f}%**")
+            elif pred['confidence'] > 70:
+                st.info(f"**{pred['confidence']:.1f}%**")
+            else:
+                st.warning(f"**{pred['confidence']:.1f}%**")
+        
+        # Previsão
+        st.info(f"🎯 **Previsão ML:** {pred['prediction']}")
+        
+        # Médias em colunas
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric(
+                label="📊 Média da Liga",
+                value=f"{league_context['league_avg']:.0f}%",
+                delta=league_context['comparison_text']
+            )
+        
+        with col2:
+            st.metric(
+                label="🤖 Média do Sistema Over 0.5 HT",
+                value=f"{pred['probability_over']:.0f}%",
+                delta="ML Prediction"
+            )
+        
+        with col3:
+            diff = pred['confidence'] - league_context['league_avg']
+            st.metric(
+                label="📈 Diferença vs Liga",
+                value=f"{diff:+.0f}%",
+                delta="Acima" if diff > 0 else "Abaixo"
+            )
+        
+        st.markdown("---")
+
 def main():
     st.title("⚽ HT Goals AI Engine")
     st.markdown("🚀 Powered by Predictive Modeling & Advanced Metrics")
@@ -1061,12 +1123,13 @@ def main():
             else:
                 st.warning("⚠️ Nenhum modelo encontrado")
     
-    # Tabs principais
-    tab1, tab2, tab3, tab4 = st.tabs([
+    # Tabs principais com nova aba
+    tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "🎯 Previsões do Dia",
         "📊 Análise por Liga", 
         "🤖 Treinar Modelo Avançado",
-        "📈 Performance ML"
+        "📈 Performance ML",
+        "🚀 Análise Automática"  # Nova aba
     ])
     
     with tab1:
@@ -1458,6 +1521,143 @@ def main():
             st.write("2. Marque 'Usar dados em cache' (recomendado)")
             st.write("3. Clique em 'Iniciar Treinamento Avançado'")
             st.write("4. Aguarde o modelo ser treinado com todas as features avançadas")
+    
+    with tab5:
+        st.header("🚀 Análise Automática - Um Clique")
+        st.markdown("Sistema automático que treina o modelo e analisa os jogos de hoje com apenas 1 clique!")
+        
+        # Container central para o botão
+        col1, col2, col3 = st.columns([1, 2, 1])
+        
+        with col2:
+            # Verificar se já tem modelo treinado hoje
+            if 'auto_analysis_done' in st.session_state and st.session_state.auto_analysis_done:
+                st.success("✅ Análise completa! Veja os resultados abaixo.")
+                
+                # Botão para refazer análise
+                if st.button("🔄 Refazer Análise", use_container_width=True):
+                    st.session_state.auto_analysis_done = False
+                    st.rerun()
+            else:
+                # Botão principal
+                if st.button("🎯 ANALISAR JOGOS DE HOJE", use_container_width=True, type="primary", key="auto_analyze"):
+                    
+                    # Container para mostrar o progresso
+                    progress_container = st.container()
+                    
+                    with progress_container:
+                        # Passo 1: Verificar conexão
+                        progress = st.progress(0.1)
+                        status_text = st.empty()
+                        status_text.text("🔍 Verificando conexão com API...")
+                        
+                        conn_ok, conn_msg = test_api_connection()
+                        if not conn_ok:
+                            st.error(f"❌ Erro de conexão: {conn_msg}")
+                            st.stop()
+                        
+                        # Passo 2: Carregar dados
+                        progress.progress(0.2)
+                        status_text.text("📊 Carregando dados históricos...")
+                        
+                        df, message = load_historical_data()
+                        if df is None:
+                            status_text.text("📥 Coletando dados da API (pode demorar)...")
+                            df = collect_historical_data_optimized(days=30, use_cached=False)
+                            if df.empty:
+                                st.error("❌ Não foi possível coletar dados")
+                                st.stop()
+                        
+                        # Passo 3: Treinar modelo
+                        progress.progress(0.4)
+                        status_text.text("🧠 Treinando modelo ML (70% treino, 15% validação, 15% teste)...")
+                        
+                        model_data, results = train_ml_model_robust(df)
+                        if not model_data:
+                            st.error("❌ Erro ao treinar modelo")
+                            st.stop()
+                        
+                        # Passo 4: Buscar jogos de hoje
+                        progress.progress(0.6)
+                        status_text.text("🔍 Buscando jogos de hoje...")
+                        
+                        today = datetime.now().strftime('%Y-%m-%d')
+                        fixtures = get_fixtures_cached_robust(today)
+                        
+                        if not fixtures:
+                            progress.progress(1.0)
+                            status_text.text("✅ Análise completa!")
+                            st.warning("📅 Nenhum jogo encontrado para hoje")
+                            st.session_state.auto_analysis_done = True
+                            st.stop()
+                        
+                        # Passo 5: Fazer previsões
+                        progress.progress(0.8)
+                        status_text.text("🎯 Gerando previsões com ML avançado...")
+                        
+                        predictions = predict_matches(fixtures, model_data)
+                        
+                        # Filtrar apenas OVER 0.5 com boa confiança
+                        best_predictions = [p for p in predictions if p['prediction'] == 'OVER 0.5' and p['confidence'] > 65]
+                        best_predictions.sort(key=lambda x: x['confidence'], reverse=True)
+                        
+                        # Passo 6: Finalizar
+                        progress.progress(1.0)
+                        status_text.text("✅ Análise completa!")
+                        time.sleep(1)
+                        
+                        # Limpar progresso
+                        progress.empty()
+                        status_text.empty()
+                        
+                        # Marcar como concluído
+                        st.session_state.auto_analysis_done = True
+                        st.session_state.auto_predictions = best_predictions
+                        st.session_state.auto_model_data = model_data
+                        st.session_state.auto_results = results
+        
+        # Mostrar resultados se a análise foi feita
+        if 'auto_analysis_done' in st.session_state and st.session_state.auto_analysis_done:
+            
+            # Mostrar métricas do modelo
+            if 'auto_results' in st.session_state:
+                results = st.session_state.auto_results
+                best_model = max(results.items(), key=lambda x: x[1]['f1_score'])
+                
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("🏆 Modelo", best_model[0])
+                with col2:
+                    st.metric("📊 Precisão", f"{best_model[1]['precision']:.1%}")
+                with col3:
+                    st.metric("🎯 F1-Score", f"{best_model[1]['f1_score']:.1%}")
+            
+            st.markdown("---")
+            
+            # Mostrar previsões
+            if 'auto_predictions' in st.session_state and st.session_state.auto_predictions:
+                predictions = st.session_state.auto_predictions
+                
+                st.subheader(f"🏆 Melhores Apostas Over 0.5 HT - {datetime.now().strftime('%d/%m/%Y')}")
+                
+                # Estatísticas resumo
+                col1, col2, col3 = st.columns(3)
+                with col1:
+                    st.metric("Total de Apostas", len(predictions))
+                with col2:
+                    avg_conf = sum(p['confidence'] for p in predictions) / len(predictions) if predictions else 0
+                    st.metric("Confiança Média", f"{avg_conf:.1f}%")
+                with col3:
+                    high_conf = len([p for p in predictions if p['confidence'] > 70])
+                    st.metric("Alta Confiança (>70%)", high_conf)
+                
+                st.markdown("---")
+                
+                # Exibir cards estilo da imagem
+                for pred in predictions[:10]:  # Top 10
+                    display_prediction_card_with_averages(pred)
+            else:
+                st.info("🤷 Nenhuma aposta com boa confiança encontrada hoje")
 
 if __name__ == "__main__":
     main()
