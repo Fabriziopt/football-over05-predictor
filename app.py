@@ -518,14 +518,138 @@ def train_maximum_performance_model(df):
     try:
         st.info("🎯 Iniciando treinamento MÁXIMA PERFORMANCE...")
         
-        # 1. Preparar features ultra-específicas HT
-        features_df, team_stats = prepare_ultra_ht_features(df)
+        # Garantir coluna over_05
+        if 'over_05' not in df.columns:
+            if 'ht_home_goals' in df.columns and 'ht_away_goals' in df.columns:
+                df['over_05'] = (df['ht_home_goals'] + df['ht_away_goals']) > 0
         
+        if 'ht_total_goals' not in df.columns:
+            if 'ht_home_goals' in df.columns and 'ht_away_goals' in df.columns:
+                df['ht_total_goals'] = df['ht_home_goals'] + df['ht_away_goals']
+        
+        # Ordenar temporalmente
+        if 'date' in df.columns:
+            df = df.sort_values(['date', 'timestamp']).reset_index(drop=True)
+        
+        st.info("🎯 Preparando features básicas otimizadas...")
+        
+        # Preparar features básicas (versão simplificada)
+        team_stats = {}
+        unique_teams = pd.concat([df['home_team_id'], df['away_team_id']]).unique()
+        
+        for team_id in unique_teams:
+            team_stats[team_id] = {
+                'games': 0, 'over_05': 0, 'ht_goals_scored': 0, 'ht_goals_conceded': 0,
+                'home_games': 0, 'home_over': 0, 'away_games': 0, 'away_over': 0,
+                'ht_goals_list': [], 'over_list': []
+            }
+        
+        features = []
+        
+        for idx, row in df.iterrows():
+            home_id = row['home_team_id']
+            away_id = row['away_team_id']
+            home_stats = team_stats[home_id]
+            away_stats = team_stats[away_id]
+            
+            # Features básicas otimizadas
+            home_over_rate = home_stats['over_05'] / max(home_stats['games'], 1)
+            home_avg_goals = home_stats['ht_goals_scored'] / max(home_stats['games'], 1)
+            away_over_rate = away_stats['over_05'] / max(away_stats['games'], 1)
+            away_avg_goals = away_stats['ht_goals_scored'] / max(away_stats['games'], 1)
+            
+            # Features avançadas HT
+            if len(home_stats['ht_goals_list']) > 1:
+                home_consistency = 1 / (1 + np.std(home_stats['ht_goals_list']) / (np.mean(home_stats['ht_goals_list']) + 0.01))
+            else:
+                home_consistency = 0.5
+                
+            if len(away_stats['ht_goals_list']) > 1:
+                away_consistency = 1 / (1 + np.std(away_stats['ht_goals_list']) / (np.mean(away_stats['ht_goals_list']) + 0.01))
+            else:
+                away_consistency = 0.5
+            
+            # Momentum HT
+            home_recent = home_stats['over_list'][-5:] if len(home_stats['over_list']) >= 5 else home_stats['over_list']
+            away_recent = away_stats['over_list'][-5:] if len(away_stats['over_list']) >= 5 else away_stats['over_list']
+            
+            home_momentum = sum(home_recent) / len(home_recent) if home_recent else home_over_rate
+            away_momentum = sum(away_recent) / len(away_recent) if away_recent else away_over_rate
+            
+            # Liga context
+            league_id = row['league_id']
+            league_mask = df['league_id'] == league_id
+            league_data = df.loc[league_mask & (df.index < idx)]
+            league_over_rate = league_data['over_05'].mean() if len(league_data) > 0 else 0.5
+            
+            feature_row = {
+                # Features básicas HT
+                'home_ht_over_rate': home_over_rate,
+                'home_ht_avg_goals': home_avg_goals,
+                'home_home_ht_over_rate': home_stats['home_over'] / max(home_stats['home_games'], 1),
+                'away_ht_over_rate': away_over_rate,
+                'away_ht_avg_goals': away_avg_goals,
+                'away_away_ht_over_rate': away_stats['away_over'] / max(away_stats['away_games'], 1),
+                'league_ht_over_rate': league_over_rate,
+                
+                # Features avançadas HT
+                'home_ht_consistency': home_consistency,
+                'away_ht_consistency': away_consistency,
+                'home_ht_momentum': home_momentum,
+                'away_ht_momentum': away_momentum,
+                'combined_ht_strength': (home_over_rate + away_over_rate) / 2,
+                'combined_ht_consistency': (home_consistency + away_consistency) / 2,
+                'combined_ht_momentum': (home_momentum + away_momentum) / 2,
+                'ht_strength_difference': abs(home_over_rate - away_over_rate),
+                'ht_momentum_difference': abs(home_momentum - away_momentum),
+                'ht_vs_league': (home_over_rate + away_over_rate) / 2 - league_over_rate,
+                
+                # Features matemáticas HT
+                'ht_geometric_mean': np.sqrt(max(home_over_rate * away_over_rate, 0.001)),
+                'ht_synergy_factor': (home_over_rate + away_over_rate) * (home_consistency + away_consistency) * (home_momentum + away_momentum) / 8,
+                
+                'target': row['over_05']
+            }
+            
+            features.append(feature_row)
+            
+            # Atualizar estatísticas
+            ht_home_goals = row.get('ht_home_goals', 0)
+            ht_away_goals = row.get('ht_away_goals', 0)
+            
+            # Home team
+            team_stats[home_id]['games'] += 1
+            team_stats[home_id]['over_05'] += row['over_05']
+            team_stats[home_id]['ht_goals_scored'] += ht_home_goals
+            team_stats[home_id]['ht_goals_conceded'] += ht_away_goals
+            team_stats[home_id]['home_games'] += 1
+            team_stats[home_id]['home_over'] += row['over_05']
+            team_stats[home_id]['ht_goals_list'].append(ht_home_goals)
+            team_stats[home_id]['over_list'].append(row['over_05'])
+            
+            # Away team
+            team_stats[away_id]['games'] += 1
+            team_stats[away_id]['over_05'] += row['over_05']
+            team_stats[away_id]['ht_goals_scored'] += ht_away_goals
+            team_stats[away_id]['ht_goals_conceded'] += ht_home_goals
+            team_stats[away_id]['away_games'] += 1
+            team_stats[away_id]['away_over'] += row['over_05']
+            team_stats[away_id]['ht_goals_list'].append(ht_away_goals)
+            team_stats[away_id]['over_list'].append(row['over_05'])
+            
+            # Manter apenas últimos 10 jogos
+            for team_id in [home_id, away_id]:
+                if len(team_stats[team_id]['ht_goals_list']) > 10:
+                    team_stats[team_id]['ht_goals_list'] = team_stats[team_id]['ht_goals_list'][-10:]
+                    team_stats[team_id]['over_list'] = team_stats[team_id]['over_list'][-10:]
+        
+        features_df = pd.DataFrame(features)
+        st.success(f"🎯 {len(features_df.columns)-1} features HT otimizadas preparadas!")
         feature_cols = [col for col in features_df.columns if col != 'target']
         X = features_df[feature_cols]
         y = features_df['target']
         
-        st.info(f"🎯 {len(feature_cols)} features ULTRA-HT específicas")
+        st.info(f"🎯 {len(feature_cols)} features HT otimizadas")
         
         # 2. VALIDAÇÃO TEMPORAL (não aleatória)
         st.info("⏱️ Aplicando validação temporal...")
