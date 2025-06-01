@@ -106,7 +106,7 @@ class SmartPredictionSystem:
         self.min_games_threshold = 3
         
         # Parâmetros da API HT Goals
-        self.confidence_range = {'min': 50, 'max': 100}
+        self.confidence_range = {'min': 70, 'max': 100}
     
     def fetch_data_from_api(self, league_id, home_team_id, away_team_id):
         """Busca dados necessários da API HT Goals"""
@@ -341,7 +341,7 @@ class SmartPredictionSystem:
         # Convertir para porcentagem
         confidence_percentage = final_probability * 100
         
-        # Garantir que está dentro dos limites da API (50-100%)
+        # Garantir que está dentro dos limites da API (70-100%)
         confidence_percentage = max(self.confidence_range['min'], 
                                   min(self.confidence_range['max'], confidence_percentage))
         
@@ -879,7 +879,334 @@ def example_usage_with_api():
     
     return result
 
-def export_predictions_to_excel(predictions_df, filename="ht_goals_predictions.xlsx"):
+    def unified_prediction_with_validation(self, league_id, home_team_id, away_team_id, match_date=None):
+        """
+        Sistema Unificado de Predição com Validação Histórica
+        
+        Processo completo:
+        1. Análise da Liga (base rate)
+        2. Análise dos Times (ajustes específicos)
+        3. Contexto do Jogo (confronto direto)
+        4. Comparação com Histórico (validação)
+        5. Ajuste Final da Confiança
+        """
+        
+        print("🔄 Iniciando Análise Unificada...")
+        
+        # Buscar todos os dados necessários
+        league_data, home_team_data, away_team_data = self.fetch_data_from_api(
+            league_id, home_team_id, away_team_id
+        )
+        
+        # Verificar dados mínimos
+        if len(home_team_data) < self.min_games_threshold or len(away_team_data) < self.min_games_threshold:
+            return {
+                'error': 'Dados insuficientes',
+                'confidence_percentage': 70,  # Mínimo agora é 70%
+                'recommendation': 'SKIP'
+            }
+        
+        # ETAPA 1: Predição Base
+        base_prediction = self.predict_match(league_data, home_team_data, away_team_data)
+        
+        # ETAPA 2: Validação com Histórico Similar
+        historical_validation = self.validate_with_historical_matches(
+            league_data, 
+            base_prediction['confidence_percentage'],
+            base_prediction['breakdown']
+        )
+        
+        # ETAPA 3: Ajuste de Confiança baseado no Histórico
+        adjusted_confidence = self.adjust_confidence_by_history(
+            base_prediction['confidence_percentage'],
+            historical_validation['accuracy_in_range'],
+            historical_validation['matches_count']
+        )
+        
+        # ETAPA 4: Decisão Final
+        recommendation = self.make_final_recommendation(
+            adjusted_confidence,
+            historical_validation
+        )
+        
+        return {
+            'final_confidence': adjusted_confidence,
+            'base_confidence': base_prediction['confidence_percentage'],
+            'historical_accuracy': historical_validation['accuracy_in_range'],
+            'similar_matches_analyzed': historical_validation['matches_count'],
+            'recommendation': recommendation,
+            'breakdown': base_prediction['breakdown'],
+            'validation_details': historical_validation,
+            'analysis_summary': {
+                'league_tendency': f"{base_prediction['breakdown']['league_base']:.1f}%",
+                'teams_adjustment': f"{base_prediction['breakdown']['team_adjustment']:.1f}%",
+                'historical_performance': f"{historical_validation['accuracy_in_range']:.1f}%",
+                'confidence_level': self.get_confidence_level(adjusted_confidence)
+            }
+        }
+    
+    def validate_with_historical_matches(self, league_data, predicted_confidence, breakdown):
+        """
+        Valida predição comparando com jogos históricos similares
+        """
+        # Filtrar jogos com características similares
+        confidence_range = (predicted_confidence - 5, predicted_confidence + 5)
+        
+        similar_matches = []
+        
+        for idx, match in league_data.iterrows():
+            # Simular predição para jogos passados
+            try:
+                # Pegar dados históricos até aquele jogo
+                historical_until_match = league_data[league_data['date'] < match['date']]
+                
+                if len(historical_until_match) < 20:
+                    continue
+                
+                # Dados dos times
+                home_data = historical_until_match[
+                    historical_until_match['home_team_id'] == match['home_team_id']
+                ]
+                away_data = historical_until_match[
+                    historical_until_match['away_team_id'] == match['away_team_id']
+                ]
+                
+                if len(home_data) >= self.min_games_threshold and len(away_data) >= self.min_games_threshold:
+                    # Fazer predição retroativa
+                    retro_prediction = self.predict_match(historical_until_match, home_data, away_data)
+                    
+                    # Se confiança similar, adicionar aos similares
+                    if confidence_range[0] <= retro_prediction['confidence_percentage'] <= confidence_range[1]:
+                        similar_matches.append({
+                            'predicted_conf': retro_prediction['confidence_percentage'],
+                            'actual_result': match['over_05'],
+                            'correct': (retro_prediction['final_probability'] > 0.5) == match['over_05']
+                        })
+                        
+            except:
+                continue
+        
+        # Calcular estatísticas dos jogos similares
+        if len(similar_matches) >= 5:  # Mínimo de jogos para validação
+            correct_predictions = sum([m['correct'] for m in similar_matches])
+            accuracy = (correct_predictions / len(similar_matches)) * 100
+            
+            return {
+                'matches_count': len(similar_matches),
+                'accuracy_in_range': accuracy,
+                'confidence_range': confidence_range,
+                'avg_confidence': np.mean([m['predicted_conf'] for m in similar_matches])
+            }
+        
+        return {
+            'matches_count': 0,
+            'accuracy_in_range': predicted_confidence,  # Mantém confiança original
+            'confidence_range': confidence_range,
+            'avg_confidence': predicted_confidence
+        }
+    
+    def adjust_confidence_by_history(self, base_confidence, historical_accuracy, matches_count):
+        """
+        Ajusta confiança baseado no desempenho histórico
+        """
+        if matches_count < 5:
+            # Poucos dados históricos, manter confiança base
+            return base_confidence
+        
+        # Peso do histórico aumenta com quantidade de jogos
+        historical_weight = min(0.4, matches_count / 50)  # Máximo 40% de peso
+        
+        # Ajuste ponderado
+        adjusted = (base_confidence * (1 - historical_weight)) + (historical_accuracy * historical_weight)
+        
+        # Garantir limites 70-100%
+        return max(self.confidence_range['min'], min(self.confidence_range['max'], adjusted))
+    
+    def make_final_recommendation(self, confidence, validation):
+        """
+        Faz recomendação final baseada em todos os fatores
+        """
+        if validation['matches_count'] < 5:
+            if confidence >= 85:
+                return "BET_CAUTIOUS"  # Apostar com cautela (poucos dados históricos)
+            else:
+                return "ANALYZE_MORE"  # Precisa mais análise
+        
+        # Com dados históricos suficientes
+        if confidence >= 85 and validation['accuracy_in_range'] >= 75:
+            return "STRONG_BET"  # Aposta forte
+        elif confidence >= 75 and validation['accuracy_in_range'] >= 70:
+            return "MODERATE_BET"  # Aposta moderada
+        elif confidence >= 70:
+            return "WEAK_BET"  # Aposta fraca
+        else:
+            return "SKIP"  # Pular esta aposta
+    
+    def get_confidence_level(self, confidence):
+        """
+        Retorna nível de confiança em texto
+        """
+        if confidence >= 90:
+            return "MUITO ALTA"
+        elif confidence >= 80:
+            return "ALTA"
+        elif confidence >= 70:
+            return "MODERADA"
+        else:
+            return "BAIXA"
+    
+    def compare_model_vs_league_baseline(self, backtest_results, league_data):
+        """
+        Compara performance do modelo vs taxa base da liga
+        Isso mostra se o modelo está agregando valor real
+        """
+        # Taxa base da liga (% de jogos Over 0.5 HT)
+        league_baseline = league_data['over_05'].mean() * 100
+        
+        # Performance do modelo
+        model_accuracy = backtest_results.get('overall_accuracy', 0)
+        
+        # Calcular lift (melhoria sobre baseline)
+        if league_baseline > 0:
+            lift = ((model_accuracy - league_baseline) / league_baseline) * 100
+        else:
+            lift = 0
+        
+        # Análise por tipo de aposta
+        performance_vs_baseline = {}
+        
+        for rec_type, stats in backtest_results['by_recommendation'].items():
+            if stats['count'] > 0:
+                # Taxa de acerto do modelo para este tipo
+                model_rate = stats['accuracy']
+                
+                # Comparar com baseline
+                improvement = model_rate - league_baseline
+                
+                performance_vs_baseline[rec_type] = {
+                    'model_accuracy': model_rate,
+                    'league_baseline': league_baseline,
+                    'improvement': improvement,
+                    'relative_lift': (improvement / league_baseline * 100) if league_baseline > 0 else 0
+                }
+        
+        return {
+            'league_baseline': league_baseline,
+            'model_overall_accuracy': model_accuracy,
+            'absolute_improvement': model_accuracy - league_baseline,
+            'relative_lift': lift,
+            'by_recommendation': performance_vs_baseline,
+            'is_model_better': model_accuracy > league_baseline
+        }
+    
+    def run_integrated_backtest(self, historical_data, min_confidence=70):
+        """
+        Executa backtesting integrado com o sistema unificado
+        """
+        print("🚀 Iniciando Backtesting Integrado...")
+        
+        results = {
+            'total_predictions': 0,
+            'correct_predictions': 0,
+            'by_recommendation': {
+                'STRONG_BET': {'count': 0, 'correct': 0},
+                'MODERATE_BET': {'count': 0, 'correct': 0},
+                'WEAK_BET': {'count': 0, 'correct': 0},
+                'SKIP': {'count': 0, 'correct': 0}
+            },
+            'by_confidence_range': {},
+            'detailed_results': []
+        }
+        
+        # Ordenar por data
+        historical_data = historical_data.sort_values('date')
+        
+        # Últimos 20% dos dados para teste
+        test_size = int(len(historical_data) * 0.2)
+        test_start_idx = len(historical_data) - test_size
+        
+        for idx in range(test_start_idx, len(historical_data)):
+            match = historical_data.iloc[idx]
+            
+            # Dados até este jogo
+            train_data = historical_data.iloc[:idx]
+            
+            # Simular predição unificada
+            try:
+                # Dados da liga
+                league_train = train_data[train_data['league_id'] == match['league_id']]
+                
+                # Dados dos times
+                home_train = league_train[league_train['home_team_id'] == match['home_team_id']]
+                away_train = league_train[league_train['away_team_id'] == match['away_team_id']]
+                
+                if len(home_train) >= self.min_games_threshold and len(away_train) >= self.min_games_threshold:
+                    # Fazer predição
+                    base_pred = self.predict_match(league_train, home_train, away_train)
+                    
+                    # Validar com histórico
+                    validation = self.validate_with_historical_matches(
+                        league_train, 
+                        base_pred['confidence_percentage'],
+                        base_pred['breakdown']
+                    )
+                    
+                    # Ajustar confiança
+                    final_conf = self.adjust_confidence_by_history(
+                        base_pred['confidence_percentage'],
+                        validation['accuracy_in_range'],
+                        validation['matches_count']
+                    )
+                    
+                    # Recomendação
+                    recommendation = self.make_final_recommendation(final_conf, validation)
+                    
+                    # Resultado real
+                    actual = match['over_05']
+                    predicted = base_pred['final_probability'] > 0.5
+                    correct = predicted == actual
+                    
+                    # Atualizar estatísticas
+                    results['total_predictions'] += 1
+                    if correct:
+                        results['correct_predictions'] += 1
+                    
+                    # Por recomendação
+                    if recommendation in results['by_recommendation']:
+                        results['by_recommendation'][recommendation]['count'] += 1
+                        if correct:
+                            results['by_recommendation'][recommendation]['correct'] += 1
+                    
+                    # Guardar resultado detalhado
+                    results['detailed_results'].append({
+                        'date': match['date'],
+                        'league_id': match['league_id'],
+                        'final_confidence': final_conf,
+                        'historical_accuracy': validation['accuracy_in_range'],
+                        'recommendation': recommendation,
+                        'correct': correct,
+                        'actual': actual
+                    })
+                    
+            except Exception as e:
+                continue
+        
+        # Calcular estatísticas finais
+        if results['total_predictions'] > 0:
+            results['overall_accuracy'] = (results['correct_predictions'] / results['total_predictions']) * 100
+            
+            # Acurácia por recomendação
+            for rec_type, stats in results['by_recommendation'].items():
+                if stats['count'] > 0:
+                    stats['accuracy'] = (stats['correct'] / stats['count']) * 100
+                else:
+                    stats['accuracy'] = 0
+        
+        # NOVA FUNCIONALIDADE: Comparar com baseline da liga
+        league_comparison = self.compare_model_vs_league_baseline(results, historical_data)
+        results['league_comparison'] = league_comparison
+        
+        return results
     """
     Exporta predições para Excel com formatação profissional
     """
