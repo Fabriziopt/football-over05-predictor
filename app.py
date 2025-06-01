@@ -6,17 +6,20 @@ from datetime import datetime, timedelta
 import time
 import joblib
 import os
-from sklearn.model_selection import train_test_split
-from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier
+from sklearn.model_selection import TimeSeriesSplit
+from sklearn.ensemble import RandomForestClassifier, VotingClassifier
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
 from sklearn.preprocessing import StandardScaler
+from sklearn.calibration import CalibratedClassifierCV
+import xgboost as xgb
+import lightgbm as lgb
 import warnings
 warnings.filterwarnings('ignore')
 
 # Configuração da página
 st.set_page_config(
-    page_title="⚽ HT Goals AI Engine",
-    page_icon="🤖",
+    page_title="⚽ HT Goals AI - Alta Precisão",
+    page_icon="🎯",
     layout="wide"
 )
 
@@ -41,7 +44,7 @@ MODEL_DIR = "models"
 try:
     if not os.path.exists(MODEL_DIR):
         os.makedirs(MODEL_DIR)
-except Exception as e:
+except:
     MODEL_DIR = "/tmp/models"
     if not os.path.exists(MODEL_DIR):
         os.makedirs(MODEL_DIR)
@@ -59,12 +62,8 @@ def test_api_connection():
             return True, "Conexão OK"
         else:
             return False, f"Status HTTP: {response.status_code}"
-    except requests.exceptions.Timeout:
-        return False, "Timeout - conexão lenta"
-    except requests.exceptions.ConnectionError:
-        return False, "Erro de conexão - verifique internet"
-    except Exception as e:
-        return False, f"Erro: {str(e)}"
+    except:
+        return False, "Erro de conexão"
 
 def get_fixtures_with_retry(date_str, max_retries=3):
     """Busca jogos da API com retry automático"""
@@ -82,11 +81,9 @@ def get_fixtures_with_retry(date_str, max_retries=3):
             if response.status_code == 200:
                 try:
                     data = response.json()
-                    if 'errors' in data and data['errors']:
-                        return []
                     fixtures = data.get('response', [])
                     return fixtures
-                except Exception:
+                except:
                     return []
             else:
                 if attempt < max_retries - 1:
@@ -94,7 +91,7 @@ def get_fixtures_with_retry(date_str, max_retries=3):
                     continue
                 else:
                     return []
-        except Exception:
+        except:
             if attempt < max_retries - 1:
                 time.sleep(2 ** attempt)
                 continue
@@ -107,7 +104,7 @@ def get_fixtures_cached(date_str):
     """Busca jogos com cache"""
     try:
         return get_fixtures_with_retry(date_str)
-    except Exception:
+    except:
         return []
 
 def load_historical_data():
@@ -116,9 +113,7 @@ def load_historical_data():
         "data/historical_matches.parquet",
         "data/historical_matches.csv",
         "historical_matches.parquet",
-        "historical_matches.csv",
-        "data/historical_matches_complete.parquet",
-        "data/historical_matches_cache.parquet"
+        "historical_matches.csv"
     ]
     
     for file_path in data_files:
@@ -129,7 +124,6 @@ def load_historical_data():
                 else:
                     df = pd.read_csv(file_path)
                 
-                # Garantir que temos coluna date como datetime
                 if 'date' in df.columns:
                     df['date'] = pd.to_datetime(df['date'])
                 
@@ -138,18 +132,15 @@ def load_historical_data():
                 elif 'ht_home_goals' in df.columns and 'ht_away_goals' in df.columns:
                     df['over_05'] = (df['ht_home_goals'] + df['ht_away_goals']) > 0
                 
-                return df, f"✅ {len(df)} jogos carregados do cache local"
-            except Exception as e:
+                return df, f"✅ {len(df)} jogos carregados"
+            except:
                 continue
     
-    return None, "❌ Nenhum arquivo de dados históricos encontrado"
+    return None, "❌ Nenhum arquivo encontrado"
 
-def collect_historical_data_smart(days=730, use_cached=True):
-    """Coleta inteligente de dados históricos"""
+def collect_historical_data_smart(days=90, use_cached=True):
+    """Coleta inteligente de dados históricos - 90 dias é o ideal"""
     
-    df_from_cache = pd.DataFrame()
-    
-    # 1. Tentar carregar do cache primeiro
     if use_cached:
         df_cache, message = load_historical_data()
         if df_cache is not None and not df_cache.empty:
@@ -157,35 +148,19 @@ def collect_historical_data_smart(days=730, use_cached=True):
                 df_cache['date'] = pd.to_datetime(df_cache['date'])
                 current_date = datetime.now()
                 cutoff_date = current_date - timedelta(days=days)
-                df_from_cache = df_cache[df_cache['date'] >= cutoff_date].copy()
+                df_filtered = df_cache[df_cache['date'] >= cutoff_date].copy()
                 
-                if len(df_from_cache) > 0:
-                    min_date = df_from_cache['date'].min()
-                    max_date = df_from_cache['date'].max()
-                    actual_days = (max_date - min_date).days
-                    st.info(f"📊 Cache: {len(df_cache)} jogos totais → {len(df_from_cache)} jogos filtrados")
-                    st.info(f"📅 Período: {min_date.strftime('%d/%m/%Y')} a {max_date.strftime('%d/%m/%Y')} ({actual_days} dias)")
-                    
-                    if actual_days >= (days * 0.8):
-                        return df_from_cache
+                if len(df_filtered) > 0:
+                    return df_filtered
     
-    # 2. Se não tem dados suficientes, buscar da API
-    st.warning("⚠️ Coletando dados da API - pode demorar...")
+    # Se não tem cache, buscar da API
+    st.warning("⚠️ Coletando dados da API...")
     
     sample_days = []
     for i in range(min(30, days)):
         sample_days.append(i + 1)
     if days > 30:
-        for i in range(30, min(90, days), 2):
-            sample_days.append(i + 1)
-    if days > 90:
-        for i in range(90, min(270, days), 3):
-            sample_days.append(i + 1)
-    if days > 270:
-        for i in range(270, min(365, days), 5):
-            sample_days.append(i + 1)
-    if days > 365:
-        for i in range(365, days, 7):
+        for i in range(30, days, 2):
             sample_days.append(i + 1)
     
     all_data = []
@@ -199,13 +174,10 @@ def collect_historical_data_smart(days=730, use_cached=True):
             fixtures = get_fixtures_cached(date_str)
             if fixtures:
                 for match in fixtures:
-                    try:
-                        if match['fixture']['status']['short'] == 'FT' and match.get('score', {}).get('halftime'):
-                            match_data = extract_match_features(match)
-                            if match_data:
-                                all_data.append(match_data)
-                    except:
-                        continue
+                    if match['fixture']['status']['short'] == 'FT' and match.get('score', {}).get('halftime'):
+                        match_data = extract_match_features(match)
+                        if match_data:
+                            all_data.append(match_data)
         except:
             continue
         
@@ -217,68 +189,121 @@ def collect_historical_data_smart(days=730, use_cached=True):
     
     progress_bar.empty()
     
-    if all_data:
-        df_api = pd.DataFrame(all_data)
-        df_api['date'] = pd.to_datetime(df_api['date'])
-        
-        if not df_from_cache.empty:
-            df_combined = pd.concat([df_from_cache, df_api], ignore_index=True)
-            df_combined = df_combined.drop_duplicates(subset=['date', 'home_team_id', 'away_team_id'], keep='first')
-        else:
-            df_combined = df_api
-        
-        current_date = datetime.now()
-        cutoff_date = current_date - timedelta(days=days)
-        df_final = df_combined[df_combined['date'] >= cutoff_date].copy()
-        
-        try:
-            cache_file = "data/historical_matches_cache.parquet"
-            os.makedirs("data", exist_ok=True)
-            df_combined.to_parquet(cache_file)
-        except:
-            pass
-        
-        return df_final
-    
-    return df_from_cache if not df_from_cache.empty else pd.DataFrame()
+    return pd.DataFrame(all_data)
 
 def extract_match_features(match):
     """Extrai features básicas do jogo"""
     try:
-        home_team = match['teams']['home']['name']
-        away_team = match['teams']['away']['name']
-        league_id = match['league']['id']
-        league_name = match['league']['name']
-        country = match['league']['country']
-        
         ht_home = match['score']['halftime']['home']
         ht_away = match['score']['halftime']['away']
-        over_05 = 1 if (ht_home + ht_away) > 0 else 0
         
         features = {
             'date': match['fixture']['date'][:10],
             'timestamp': match['fixture']['timestamp'],
-            'league_id': league_id,
-            'league_name': league_name,
-            'country': country,
-            'home_team': home_team,
-            'away_team': away_team,
+            'league_id': match['league']['id'],
+            'league_name': match['league']['name'],
+            'country': match['league']['country'],
+            'home_team': match['teams']['home']['name'],
+            'away_team': match['teams']['away']['name'],
             'home_team_id': match['teams']['home']['id'],
             'away_team_id': match['teams']['away']['id'],
             'ht_home_goals': ht_home,
             'ht_away_goals': ht_away,
             'ht_total_goals': ht_home + ht_away,
-            'over_05': over_05,
-            'venue': match['fixture']['venue']['name'] if match['fixture']['venue'] else 'Unknown',
-            'referee': match['fixture']['referee'] if match['fixture']['referee'] else 'Unknown'
+            'over_05': 1 if (ht_home + ht_away) > 0 else 0
         }
         
         return features
-    except Exception:
+    except:
         return None
 
-def prepare_league_specific_features(league_df):
-    """Prepara features específicas para uma liga"""
+def calculate_h2h_features(home_id, away_id, df, current_date, num_games=5):
+    """Calcula features de confronto direto (H2H) - NOVO!"""
+    
+    # Filtrar confrontos anteriores
+    h2h_matches = df[
+        ((df['home_team_id'] == home_id) & (df['away_team_id'] == away_id)) |
+        ((df['home_team_id'] == away_id) & (df['away_team_id'] == home_id))
+    ]
+    
+    if 'date' in h2h_matches.columns:
+        h2h_matches = h2h_matches[h2h_matches['date'] < current_date]
+    
+    # Pegar últimos N confrontos
+    h2h_matches = h2h_matches.sort_values('date', ascending=False).head(num_games)
+    
+    if len(h2h_matches) == 0:
+        return {
+            'h2h_games': 0,
+            'h2h_over_rate': 0.5,
+            'h2h_avg_goals': 0.5,
+            'h2h_home_advantage': 0.5
+        }
+    
+    # Calcular estatísticas H2H
+    h2h_over_rate = h2h_matches['over_05'].mean()
+    h2h_avg_goals = h2h_matches['ht_total_goals'].mean()
+    
+    # Vantagem do mandante nos confrontos diretos
+    home_games = h2h_matches[h2h_matches['home_team_id'] == home_id]
+    if len(home_games) > 0:
+        h2h_home_advantage = home_games['over_05'].mean()
+    else:
+        h2h_home_advantage = 0.5
+    
+    return {
+        'h2h_games': len(h2h_matches),
+        'h2h_over_rate': h2h_over_rate,
+        'h2h_avg_goals': h2h_avg_goals,
+        'h2h_home_advantage': h2h_home_advantage
+    }
+
+def calculate_form_features(team_id, df, current_date, last_n_games=5):
+    """Calcula forma recente do time - NOVO!"""
+    
+    # Jogos do time
+    team_matches = df[
+        (df['home_team_id'] == team_id) | (df['away_team_id'] == team_id)
+    ]
+    
+    if 'date' in team_matches.columns:
+        team_matches = team_matches[team_matches['date'] < current_date]
+    
+    # Últimos N jogos
+    recent_matches = team_matches.sort_values('date', ascending=False).head(last_n_games)
+    
+    if len(recent_matches) == 0:
+        return {
+            'form_games': 0,
+            'form_over_rate': 0.5,
+            'form_trend': 0.0,
+            'days_since_last': 30
+        }
+    
+    # Taxa de over recente
+    form_over_rate = recent_matches['over_05'].mean()
+    
+    # Tendência (comparar primeira metade com segunda metade)
+    if len(recent_matches) >= 4:
+        first_half = recent_matches.iloc[len(recent_matches)//2:]['over_05'].mean()
+        second_half = recent_matches.iloc[:len(recent_matches)//2]['over_05'].mean()
+        form_trend = second_half - first_half
+    else:
+        form_trend = 0.0
+    
+    # Dias desde último jogo
+    last_game_date = pd.to_datetime(recent_matches.iloc[0]['date'])
+    days_since_last = (pd.to_datetime(current_date) - last_game_date).days
+    
+    return {
+        'form_games': len(recent_matches),
+        'form_over_rate': form_over_rate,
+        'form_trend': form_trend,
+        'days_since_last': min(days_since_last, 30)
+    }
+
+def prepare_advanced_features_v2(league_df):
+    """Prepara features avançadas incluindo H2H e forma - MELHORADO!"""
     
     if 'over_05' not in league_df.columns:
         if 'ht_home_goals' in league_df.columns and 'ht_away_goals' in league_df.columns:
@@ -287,7 +312,7 @@ def prepare_league_specific_features(league_df):
     if 'date' in league_df.columns:
         league_df = league_df.sort_values('date').reset_index(drop=True)
     
-    # Calcular estatísticas gerais da liga
+    # Estatísticas gerais
     league_over_rate = league_df['over_05'].mean()
     
     # Inicializar estatísticas dos times
@@ -304,27 +329,25 @@ def prepare_league_specific_features(league_df):
             
             team_stats[team_id] = {
                 'team_name': team_name,
-                'games': len(team_all_matches),
-                'over_05': team_all_matches['over_05'].sum(),
-                'over_rate': team_all_matches['over_05'].mean(),
-                'goals_scored': 0,
-                'goals_conceded': 0,
-                'home_games': len(team_home_matches),
-                'home_over': team_home_matches['over_05'].sum() if len(team_home_matches) > 0 else 0,
-                'home_over_rate': team_home_matches['over_05'].mean() if len(team_home_matches) > 0 else 0,
-                'away_games': len(team_away_matches),
-                'away_over': team_away_matches['over_05'].sum() if len(team_away_matches) > 0 else 0,
-                'away_over_rate': team_away_matches['over_05'].mean() if len(team_away_matches) > 0 else 0,
+                'games': 0,
+                'over_05': 0,
+                'over_rate': 0,
+                'home_games': 0,
+                'home_over': 0,
+                'home_over_rate': 0,
+                'away_games': 0,
+                'away_over': 0,
+                'away_over_rate': 0,
                 'goals_list': [],
                 'over_list': []
             }
     
-    # Preparar features para ML
     features = []
     
     for idx, row in league_df.iterrows():
         home_id = row['home_team_id']
         away_id = row['away_team_id']
+        current_date = row['date'] if 'date' in row else datetime.now()
         
         if home_id not in team_stats or away_id not in team_stats:
             continue
@@ -332,15 +355,20 @@ def prepare_league_specific_features(league_df):
         home_stats = team_stats[home_id]
         away_stats = team_stats[away_id]
         
-        # Calcular features até este ponto (não incluir o jogo atual)
-        home_games_before = max(1, home_stats['games'] - 1)
-        away_games_before = max(1, away_stats['games'] - 1)
+        # Features básicas
+        home_over_rate = home_stats['over_05'] / max(home_stats['games'], 1)
+        away_over_rate = away_stats['over_05'] / max(away_stats['games'], 1)
         
-        home_over_rate = home_stats['over_05'] / home_games_before
-        away_over_rate = away_stats['over_05'] / away_games_before
+        # Features H2H - NOVO!
+        h2h_features = calculate_h2h_features(home_id, away_id, league_df[:idx], current_date)
         
-        # Features do jogo
+        # Features de forma - NOVO!
+        home_form = calculate_form_features(home_id, league_df[:idx], current_date)
+        away_form = calculate_form_features(away_id, league_df[:idx], current_date)
+        
+        # Criar feature row completa
         feature_row = {
+            # Features básicas
             'home_over_rate': home_over_rate,
             'away_over_rate': away_over_rate,
             'home_home_over_rate': home_stats['home_over_rate'],
@@ -348,175 +376,197 @@ def prepare_league_specific_features(league_df):
             'league_over_rate': league_over_rate,
             'combined_over_rate': (home_over_rate + away_over_rate) / 2,
             'over_rate_diff': abs(home_over_rate - away_over_rate),
-            'home_games_played': home_games_before,
-            'away_games_played': away_games_before,
+            'home_games_played': home_stats['games'],
+            'away_games_played': away_stats['games'],
+            
+            # Features H2H - NOVO!
+            'h2h_games': h2h_features['h2h_games'],
+            'h2h_over_rate': h2h_features['h2h_over_rate'],
+            'h2h_avg_goals': h2h_features['h2h_avg_goals'],
+            'h2h_home_advantage': h2h_features['h2h_home_advantage'],
+            
+            # Features de forma - NOVO!
+            'home_form_over': home_form['form_over_rate'],
+            'away_form_over': away_form['form_over_rate'],
+            'home_form_trend': home_form['form_trend'],
+            'away_form_trend': away_form['form_trend'],
+            'home_days_rest': home_form['days_since_last'],
+            'away_days_rest': away_form['days_since_last'],
+            
+            # Features combinadas - NOVO!
+            'form_advantage': home_form['form_over_rate'] - away_form['form_over_rate'],
+            'rest_advantage': home_form['days_since_last'] - away_form['days_since_last'],
+            
+            # Target
             'target': row['over_05']
         }
         
         features.append(feature_row)
         
-        # Atualizar estatísticas após o jogo
+        # Atualizar estatísticas
         ht_home_goals = row.get('ht_home_goals', 0)
         ht_away_goals = row.get('ht_away_goals', 0)
         
-        team_stats[home_id]['goals_scored'] += ht_home_goals
-        team_stats[home_id]['goals_conceded'] += ht_away_goals
-        team_stats[home_id]['goals_list'].append(ht_home_goals)
-        team_stats[home_id]['over_list'].append(row['over_05'])
+        # Atualizar home team
+        team_stats[home_id]['games'] += 1
+        team_stats[home_id]['over_05'] += row['over_05']
+        team_stats[home_id]['home_games'] += 1
+        team_stats[home_id]['home_over'] += row['over_05']
+        team_stats[home_id]['home_over_rate'] = team_stats[home_id]['home_over'] / max(team_stats[home_id]['home_games'], 1)
         
-        team_stats[away_id]['goals_scored'] += ht_away_goals
-        team_stats[away_id]['goals_conceded'] += ht_home_goals
-        team_stats[away_id]['goals_list'].append(ht_away_goals)
-        team_stats[away_id]['over_list'].append(row['over_05'])
+        # Atualizar away team
+        team_stats[away_id]['games'] += 1
+        team_stats[away_id]['over_05'] += row['over_05']
+        team_stats[away_id]['away_games'] += 1
+        team_stats[away_id]['away_over'] += row['over_05']
+        team_stats[away_id]['away_over_rate'] = team_stats[away_id]['away_over'] / max(team_stats[away_id]['away_games'], 1)
     
     return pd.DataFrame(features), team_stats, league_over_rate
 
-def train_model_for_league(league_df, league_id, league_name, progress_callback=None):
-    """Treina modelo específico para uma liga"""
+def train_ensemble_model(league_df, league_id, league_name):
+    """Treina ensemble de modelos para máxima precisão - NOVO!"""
     
-    if len(league_df) < 50:
-        return None, f"❌ Dados insuficientes para {league_name} (mínimo 50 jogos)"
+    if len(league_df) < 100:  # Aumentado mínimo para 100
+        return None, f"❌ Dados insuficientes para {league_name} (mínimo 100 jogos)"
     
     try:
-        # Preparar features
-        features_df, team_stats, league_over_rate = prepare_league_specific_features(league_df)
+        # Preparar features avançadas
+        features_df, team_stats, league_over_rate = prepare_advanced_features_v2(league_df)
         
-        if len(features_df) < 50:
+        if len(features_df) < 100:
             return None, f"❌ Features insuficientes para {league_name}"
+        
+        # Remover amostras com poucos dados
+        features_df = features_df[
+            (features_df['home_games_played'] >= 5) & 
+            (features_df['away_games_played'] >= 5)
+        ]
+        
+        if len(features_df) < 80:
+            return None, f"❌ Poucos jogos com dados suficientes para {league_name}"
         
         feature_cols = [col for col in features_df.columns if col != 'target']
         X = features_df[feature_cols]
         y = features_df['target']
         
-        # Split dos dados
-        X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
+        # Validação temporal - CRÍTICO!
+        tscv = TimeSeriesSplit(n_splits=5)
         
-        # Escalar dados
-        scaler = StandardScaler()
-        X_train_scaled = scaler.fit_transform(X_train)
-        X_test_scaled = scaler.transform(X_test)
-        
-        # Treinar modelo
-        model = RandomForestClassifier(
-            n_estimators=200,
-            max_depth=10,
-            min_samples_split=5,
-            min_samples_leaf=3,
+        # Modelos base
+        rf_model = RandomForestClassifier(
+            n_estimators=300,
+            max_depth=12,
+            min_samples_split=10,
+            min_samples_leaf=5,
             random_state=42,
             n_jobs=-1
         )
         
-        model.fit(X_train_scaled, y_train)
+        xgb_model = xgb.XGBClassifier(
+            n_estimators=300,
+            max_depth=8,
+            learning_rate=0.05,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=42,
+            use_label_encoder=False,
+            eval_metric='logloss'
+        )
         
-        # Avaliar modelo
-        test_pred = model.predict(X_test_scaled)
-        test_acc = accuracy_score(y_test, test_pred)
-        test_prec = precision_score(y_test, test_pred, zero_division=0)
-        test_rec = recall_score(y_test, test_pred, zero_division=0)
-        test_f1 = f1_score(y_test, test_pred, zero_division=0)
+        lgb_model = lgb.LGBMClassifier(
+            n_estimators=300,
+            max_depth=8,
+            learning_rate=0.05,
+            num_leaves=31,
+            subsample=0.8,
+            colsample_bytree=0.8,
+            random_state=42,
+            verbose=-1
+        )
+        
+        # Ensemble voting
+        ensemble = VotingClassifier(
+            estimators=[
+                ('rf', rf_model),
+                ('xgb', xgb_model),
+                ('lgb', lgb_model)
+            ],
+            voting='soft'
+        )
+        
+        # Treinar e avaliar com validação temporal
+        scores = []
+        for train_idx, test_idx in tscv.split(X):
+            X_train, X_test = X.iloc[train_idx], X.iloc[test_idx]
+            y_train, y_test = y.iloc[train_idx], y.iloc[test_idx]
+            
+            # Escalar dados
+            scaler = StandardScaler()
+            X_train_scaled = scaler.fit_transform(X_train)
+            X_test_scaled = scaler.transform(X_test)
+            
+            # Treinar ensemble
+            ensemble.fit(X_train_scaled, y_train)
+            
+            # Avaliar
+            pred = ensemble.predict(X_test_scaled)
+            score = f1_score(y_test, pred)
+            scores.append(score)
+        
+        avg_score = np.mean(scores)
+        
+        # Treinar no dataset completo se score é bom
+        if avg_score < 0.75:  # Rejeitar modelos ruins
+            return None, f"❌ Modelo com baixa performance para {league_name} (F1: {avg_score:.2f})"
+        
+        # Treinar modelo final
+        scaler_final = StandardScaler()
+        X_scaled = scaler_final.fit_transform(X)
+        
+        # Calibrar probabilidades para maior confiabilidade
+        calibrated_ensemble = CalibratedClassifierCV(ensemble, cv=3, method='sigmoid')
+        calibrated_ensemble.fit(X_scaled, y)
+        
+        # Calcular feature importance (média dos modelos)
+        feature_importance = {}
+        
+        # RF importance
+        rf_model.fit(X_scaled, y)
+        rf_importance = rf_model.feature_importances_
+        
+        # XGB importance
+        xgb_model.fit(X_scaled, y)
+        xgb_importance = xgb_model.feature_importances_
+        
+        # Média
+        for i, col in enumerate(feature_cols):
+            feature_importance[col] = (rf_importance[i] + xgb_importance[i]) / 2
+        
+        # Top features
+        top_features = sorted(feature_importance.items(), key=lambda x: x[1], reverse=True)[:5]
         
         # Preparar dados do modelo
         model_data = {
-            'model': model,
-            'scaler': scaler,
+            'model': calibrated_ensemble,
+            'scaler': scaler_final,
             'feature_cols': feature_cols,
             'team_stats': team_stats,
             'league_id': league_id,
             'league_name': league_name,
             'league_over_rate': league_over_rate,
             'total_matches': len(league_df),
-            'metrics': {
-                'accuracy': test_acc,
-                'precision': test_prec,
-                'recall': test_rec,
-                'f1_score': test_f1
-            }
+            'avg_cv_score': avg_score,
+            'top_features': top_features,
+            'min_games_required': 5  # Mínimo de jogos para fazer previsão
         }
         
-        return model_data, f"✅ Modelo treinado para {league_name}"
+        return model_data, f"✅ Ensemble treinado para {league_name} (F1: {avg_score:.2f})"
         
     except Exception as e:
         return None, f"❌ Erro ao treinar {league_name}: {str(e)}"
 
-def train_models_by_league(df, min_matches_per_league=50, progress_callback=None):
-    """Treina modelos separados para cada liga"""
-    
-    # Agrupar por liga
-    league_groups = df.groupby(['league_id', 'league_name', 'country'])
-    
-    league_models = {}
-    total_leagues = len(league_groups)
-    successful_leagues = 0
-    
-    progress_container = st.container()
-    
-    with progress_container:
-        progress_bar = st.progress(0)
-        status_text = st.empty()
-        
-        for idx, ((league_id, league_name, country), league_df) in enumerate(league_groups):
-            # Atualizar progresso
-            progress = (idx + 1) / total_leagues
-            progress_bar.progress(progress)
-            status_text.text(f"🏆 Treinando modelo para {league_name} ({country})...")
-            
-            if len(league_df) < min_matches_per_league:
-                st.warning(f"⚠️ {league_name} ({country}): apenas {len(league_df)} jogos (mínimo: {min_matches_per_league})")
-                continue
-            
-            # Treinar modelo para esta liga
-            model_data, message = train_model_for_league(league_df, league_id, f"{league_name} ({country})")
-            
-            if model_data:
-                league_models[league_id] = model_data
-                successful_leagues += 1
-                st.success(f"✅ {league_name} ({country}): {len(league_df)} jogos | Over 0.5 HT: {model_data['league_over_rate']:.1%}")
-            else:
-                st.error(message)
-        
-        progress_bar.empty()
-        status_text.empty()
-    
-    return league_models, successful_leagues
-
-def get_top_over_teams_by_league(league_models, min_matches=10):
-    """Identifica os times com maior taxa de Over 0.5 HT em cada liga"""
-    
-    top_teams_report = {}
-    
-    for league_id, model_data in league_models.items():
-        league_name = model_data['league_name']
-        team_stats = model_data['team_stats']
-        league_over_rate = model_data['league_over_rate']
-        
-        # Filtrar times com jogos suficientes
-        qualified_teams = []
-        
-        for team_id, stats in team_stats.items():
-            if stats['games'] >= min_matches:
-                qualified_teams.append({
-                    'team_id': team_id,
-                    'team_name': stats['team_name'],
-                    'over_rate': stats['over_rate'],
-                    'games': stats['games'],
-                    'home_over_rate': stats['home_over_rate'],
-                    'away_over_rate': stats['away_over_rate'],
-                    'above_league_avg': stats['over_rate'] - league_over_rate
-                })
-        
-        # Ordenar por taxa de Over 0.5
-        qualified_teams.sort(key=lambda x: x['over_rate'], reverse=True)
-        
-        top_teams_report[league_name] = {
-            'league_over_rate': league_over_rate,
-            'top_teams': qualified_teams[:10],  # Top 10 times
-            'bottom_teams': qualified_teams[-5:] if len(qualified_teams) > 5 else []  # Bottom 5
-        }
-    
-    return top_teams_report
-
-def predict_matches_with_league_models(fixtures, league_models):
-    """Faz previsões usando modelos específicos de cada liga"""
+def predict_with_confidence_filter(fixtures, league_models, min_confidence=75):
+    """Faz previsões apenas com alta confiança - MELHORADO!"""
     
     predictions = []
     
@@ -526,11 +576,15 @@ def predict_matches_with_league_models(fixtures, league_models):
         
         league_id = fixture['league']['id']
         
-        # Verificar se temos modelo para esta liga
         if league_id not in league_models:
             continue
         
         model_data = league_models[league_id]
+        
+        # Verificar se modelo tem boa performance
+        if model_data['avg_cv_score'] < 0.75:
+            continue
+        
         model = model_data['model']
         scaler = model_data['scaler']
         feature_cols = model_data['feature_cols']
@@ -541,25 +595,46 @@ def predict_matches_with_league_models(fixtures, league_models):
             home_id = fixture['teams']['home']['id']
             away_id = fixture['teams']['away']['id']
             
-            # Verificar se temos estatísticas dos times
             if home_id not in team_stats or away_id not in team_stats:
                 continue
             
             home_stats = team_stats[home_id]
             away_stats = team_stats[away_id]
             
-            # Criar features para previsão
+            # Filtro rigoroso: mínimo de jogos
+            if (home_stats['games'] < model_data['min_games_required'] or 
+                away_stats['games'] < model_data['min_games_required']):
+                continue
+            
+            # Criar features incluindo H2H e forma
+            current_date = datetime.now()
+            
+            # Features básicas
             features = {
-                'home_over_rate': home_stats['over_rate'],
-                'away_over_rate': away_stats['over_rate'],
+                'home_over_rate': home_stats['over_05'] / max(home_stats['games'], 1),
+                'away_over_rate': away_stats['over_05'] / max(away_stats['games'], 1),
                 'home_home_over_rate': home_stats['home_over_rate'],
                 'away_away_over_rate': away_stats['away_over_rate'],
                 'league_over_rate': league_over_rate,
-                'combined_over_rate': (home_stats['over_rate'] + away_stats['over_rate']) / 2,
-                'over_rate_diff': abs(home_stats['over_rate'] - away_stats['over_rate']),
+                'combined_over_rate': (home_stats['over_05'] / max(home_stats['games'], 1) + 
+                                      away_stats['over_05'] / max(away_stats['games'], 1)) / 2,
+                'over_rate_diff': abs(home_stats['over_05'] / max(home_stats['games'], 1) - 
+                                    away_stats['over_05'] / max(away_stats['games'], 1)),
                 'home_games_played': home_stats['games'],
                 'away_games_played': away_stats['games']
             }
+            
+            # Preencher features faltantes com valores padrão
+            for col in feature_cols:
+                if col not in features:
+                    if 'h2h' in col:
+                        features[col] = 0.5  # Sem histórico H2H
+                    elif 'form' in col:
+                        features[col] = features.get('home_over_rate', 0.5)  # Usar média geral
+                    elif 'days' in col or 'rest' in col:
+                        features[col] = 7  # Assumir 1 semana
+                    else:
+                        features[col] = 0
             
             # Fazer previsão
             X = pd.DataFrame([features])[feature_cols]
@@ -569,7 +644,19 @@ def predict_matches_with_league_models(fixtures, league_models):
             pred_class = model.predict(X_scaled)[0]
             confidence = max(pred_proba) * 100
             
-            # Adicionar informações extras
+            # FILTRO DE CONFIANÇA RIGOROSO
+            if confidence < min_confidence:
+                continue
+            
+            # Calcular força da previsão
+            strength_score = 0
+            if features['h2h_games'] > 0 and features['h2h_over_rate'] > 0.7:
+                strength_score += 1
+            if features['combined_over_rate'] > 0.7:
+                strength_score += 1
+            if home_stats['home_over_rate'] > 0.7 and away_stats['away_over_rate'] > 0.7:
+                strength_score += 1
+            
             prediction = {
                 'home_team': fixture['teams']['home']['name'],
                 'away_team': fixture['teams']['away']['name'],
@@ -583,7 +670,9 @@ def predict_matches_with_league_models(fixtures, league_models):
                 'confidence': confidence,
                 'probability_over': pred_proba[1] * 100,
                 'probability_under': pred_proba[0] * 100,
-                'model_metrics': model_data['metrics']
+                'model_score': model_data['avg_cv_score'],
+                'strength_score': strength_score,
+                'top_features': model_data['top_features']
             }
             
             predictions.append(prediction)
@@ -591,433 +680,226 @@ def predict_matches_with_league_models(fixtures, league_models):
         except Exception as e:
             continue
     
-    # Ordenar por confiança
-    predictions.sort(key=lambda x: x['confidence'], reverse=True)
-    return predictions
+    # Ordenar por confiança E força
+    predictions.sort(key=lambda x: (x['confidence'], x['strength_score']), reverse=True)
+    
+    # Retornar apenas as melhores
+    return predictions[:10]  # Máximo 10 apostas por dia
 
-def display_league_analysis(league_models):
-    """Exibe análise detalhada das ligas"""
-    
-    st.header("📊 Análise por Liga")
-    
-    # Resumo geral
-    total_leagues = len(league_models)
-    total_matches = sum(model['total_matches'] for model in league_models.values())
-    avg_over_rate = np.mean([model['league_over_rate'] for model in league_models.values()])
-    
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        st.metric("🏆 Total de Ligas", total_leagues)
-    with col2:
-        st.metric("⚽ Total de Jogos", f"{total_matches:,}")
-    with col3:
-        st.metric("📈 Média Over 0.5 HT", f"{avg_over_rate:.1%}")
-    
-    st.markdown("---")
-    
-    # Análise detalhada por liga
-    top_teams_report = get_top_over_teams_by_league(league_models)
-    
-    # Tabs para cada liga
-    league_names = list(top_teams_report.keys())
-    tabs = st.tabs(league_names[:10])  # Mostrar até 10 ligas
-    
-    for idx, (league_name, tab) in enumerate(zip(league_names[:10], tabs)):
-        with tab:
-            report = top_teams_report[league_name]
-            league_rate = report['league_over_rate']
-            
-            st.subheader(f"🎯 {league_name}")
-            st.info(f"**Taxa média da liga**: {league_rate:.1%} Over 0.5 HT")
-            
-            # Top Times Over
-            st.markdown("### 🔥 Top Times Over 0.5 HT")
-            
-            if report['top_teams']:
-                top_df = pd.DataFrame(report['top_teams'][:5])
-                top_df['over_rate'] = (top_df['over_rate'] * 100).round(1)
-                top_df['home_over_rate'] = (top_df['home_over_rate'] * 100).round(1)
-                top_df['away_over_rate'] = (top_df['away_over_rate'] * 100).round(1)
-                top_df['above_league_avg'] = (top_df['above_league_avg'] * 100).round(1)
-                
-                top_df = top_df.rename(columns={
-                    'team_name': 'Time',
-                    'over_rate': 'Over 0.5 HT %',
-                    'games': 'Jogos',
-                    'home_over_rate': 'Casa %',
-                    'away_over_rate': 'Fora %',
-                    'above_league_avg': 'Acima da Média %'
-                })
-                
-                st.dataframe(top_df[['Time', 'Over 0.5 HT %', 'Jogos', 'Casa %', 'Fora %', 'Acima da Média %']], 
-                           hide_index=True, use_container_width=True)
-            
-            # Times a evitar
-            if report['bottom_teams']:
-                st.markdown("### ❄️ Times Under (Evitar)")
-                bottom_df = pd.DataFrame(report['bottom_teams'])
-                bottom_df['over_rate'] = (bottom_df['over_rate'] * 100).round(1)
-                
-                bottom_df = bottom_df.rename(columns={
-                    'team_name': 'Time',
-                    'over_rate': 'Over 0.5 HT %',
-                    'games': 'Jogos'
-                })
-                
-                st.dataframe(bottom_df[['Time', 'Over 0.5 HT %', 'Jogos']], 
-                           hide_index=True, use_container_width=True)
-
-def display_prediction_card_enhanced(pred):
-    """Exibe card de previsão com informações detalhadas"""
+def display_high_confidence_prediction(pred):
+    """Exibe apenas previsões de alta confiança com detalhes - NOVO!"""
     
     with st.container():
-        # Header do card
-        col1, col2 = st.columns([4, 1])
+        # Header com indicadores de qualidade
+        col1, col2, col3 = st.columns([3, 1, 1])
         
         with col1:
             st.subheader(f"⚽ {pred['home_team']} vs {pred['away_team']}")
         
         with col2:
             # Badge de confiança
-            if pred['confidence'] > 75:
-                st.success(f"**{pred['confidence']:.1f}%**")
-            elif pred['confidence'] > 65:
-                st.info(f"**{pred['confidence']:.1f}%**")
-            else:
-                st.warning(f"**{pred['confidence']:.1f}%**")
+            st.success(f"**{pred['confidence']:.1f}%**")
         
-        # Informações do jogo com média da liga
-        col1, col2 = st.columns(2)
+        with col3:
+            # Indicador de força
+            strength_stars = "⭐" * pred['strength_score']
+            st.write(f"**{strength_stars}**")
+        
+        # Informações essenciais
+        col1, col2, col3 = st.columns(3)
+        
         with col1:
             st.write(f"🏆 **Liga:** {pred['league']} ({pred['country']})")
-            try:
-                hora = pred['kickoff'][11:16]
-                st.write(f"🕐 **Horário:** {hora}")
-            except:
-                st.write(f"🕐 **Horário:** --:--")
-        with col2:
-            # Mostrar média da liga com destaque
-            league_avg = pred['league_over_rate']
-            st.write(f"📊 **Média da Liga:** {league_avg:.1f}%")
-            
-            # Indicador se está acima ou abaixo da média
-            home_rate = pred['home_team_stats']['over_rate'] * 100
-            away_rate = pred['away_team_stats']['over_rate'] * 100
-            avg_teams = (home_rate + away_rate) / 2
-            
-            if avg_teams > league_avg * 1.1:  # 10% acima da média
-                st.write("✅ **Acima da média da liga**")
-            elif avg_teams < league_avg * 0.9:  # 10% abaixo da média
-                st.write("⚠️ **Abaixo da média da liga**")
-            else:
-                st.write("➖ **Na média da liga**")
+            st.write(f"📊 **Média da Liga:** {pred['league_over_rate']:.1f}%")
         
-        # Estatísticas dos times
-        st.markdown("### 📊 Estatísticas dos Times")
-        col1, col2 = st.columns(2)
-        with col1:
-            home_rate = pred['home_team_stats']['over_rate'] * 100
-            st.write(f"🏠 **{pred['home_team']}**")
-            st.write(f"- Over 0.5 HT: **{home_rate:.1f}%**")
-            st.write(f"- Jogos analisados: {pred['home_team_stats']['games']}")
-            st.write(f"- Casa: {pred['home_team_stats']['home_over_rate']*100:.1f}%")
         with col2:
-            away_rate = pred['away_team_stats']['over_rate'] * 100
-            st.write(f"✈️ **{pred['away_team']}**")
-            st.write(f"- Over 0.5 HT: **{away_rate:.1f}%**")
-            st.write(f"- Jogos analisados: {pred['away_team_stats']['games']}")
+            home_rate = pred['home_team_stats']['over_05'] / max(pred['home_team_stats']['games'], 1) * 100
+            st.write(f"🏠 **{pred['home_team']}:** {home_rate:.1f}%")
+            st.write(f"- Casa: {pred['home_team_stats']['home_over_rate']*100:.1f}%")
+        
+        with col3:
+            away_rate = pred['away_team_stats']['over_05'] / max(pred['away_team_stats']['games'], 1) * 100
+            st.write(f"✈️ **{pred['away_team']}:** {away_rate:.1f}%")
             st.write(f"- Fora: {pred['away_team_stats']['away_over_rate']*100:.1f}%")
         
-        # Previsão com análise
-        st.markdown("### 🎯 Previsão do Modelo")
-        if pred['prediction'] == 'OVER 0.5':
-            st.success(f"**{pred['prediction']} HT** - Confiança: {pred['confidence']:.1f}%")
-            st.write(f"Probabilidade Over: **{pred['probability_over']:.1f}%** | Under: {pred['probability_under']:.1f}%")
-        else:
-            st.info(f"**{pred['prediction']} HT** - Confiança: {pred['confidence']:.1f}%")
-            st.write(f"Probabilidade Under: **{pred['probability_under']:.1f}%** | Over: {pred['probability_over']:.1f}%")
+        # Previsão
+        st.success(f"🎯 **APOSTAR: {pred['prediction']} HT** - Confiança: {pred['confidence']:.1f}%")
         
-        # Critérios utilizados
-        with st.expander("🔍 Ver critérios da análise"):
-            st.write("**O modelo considera:**")
-            st.write("- ✅ Taxa histórica de Over 0.5 HT de cada time")
-            st.write("- ✅ Performance em casa vs fora")
-            st.write("- ✅ Média de Over 0.5 HT da liga")
-            st.write("- ✅ Número de jogos analisados (confiabilidade)")
-            st.write("- ✅ Diferença entre as taxas dos times")
-            st.write("- ✅ Combinação das taxas dos dois times")
+        # Features importantes
+        with st.expander("📊 Por que esta aposta?"):
+            st.write("**Fatores principais:**")
+            for feature, importance in pred['top_features'][:3]:
+                feature_name = feature.replace('_', ' ').title()
+                st.write(f"- {feature_name}: {importance:.2%}")
             
-            st.write("\n**Métricas do modelo desta liga:**")
-            metrics = pred['model_metrics']
-            col1, col2, col3, col4 = st.columns(4)
-            with col1:
-                st.metric("Acurácia", f"{metrics['accuracy']:.1%}")
-            with col2:
-                st.metric("Precisão", f"{metrics['precision']:.1%}")
-            with col3:
-                st.metric("Recall", f"{metrics['recall']:.1%}")
-            with col4:
-                st.metric("F1-Score", f"{metrics['f1_score']:.1%}")
+            st.write(f"\n**Qualidade do modelo:** F1-Score {pred['model_score']:.2f}")
         
         st.markdown("---")
 
 def main():
-    st.title("⚽ HT Goals AI Engine - Análise por Liga")
-    st.markdown("🚀 Sistema Inteligente com Modelos Específicos por Liga")
+    st.title("⚽ HT Goals AI - Sistema de Alta Precisão")
+    st.markdown("🎯 **Objetivo: 80%+ de taxa de acerto com filtros rigorosos**")
     
-    # Sidebar com status
+    # Avisos importantes
+    st.warning("""
+    ⚠️ **REGRAS PARA MÁXIMA PRECISÃO:**
+    - ✅ Só apostas com **75%+ de confiança**
+    - ✅ Apenas times com **5+ jogos** de histórico
+    - ✅ Máximo **10 apostas/dia** (qualidade > quantidade)
+    - ✅ Modelos com F1-Score **>75%**
+    """)
+    
+    # Sidebar
     with st.sidebar:
-        st.title("⚙️ Status do Sistema")
+        st.title("⚙️ Configurações")
         
-        # Teste de conexão
+        # Status
         conn_ok, conn_msg = test_api_connection()
         if conn_ok:
             st.success("✅ API conectada")
         else:
             st.error(f"❌ {conn_msg}")
         
-        # Status dos modelos
         if st.session_state.models_trained and st.session_state.league_models:
             st.success("✅ Modelos ativos")
-            st.info(f"🏆 {len(st.session_state.league_models)} ligas treinadas")
             
-            # Listar ligas treinadas
-            st.markdown("### 📋 Ligas Disponíveis:")
+            # Mostrar apenas ligas com boa performance
+            st.markdown("### 🏆 Ligas de Alta Precisão:")
             for league_id, model_data in st.session_state.league_models.items():
-                league_name = model_data['league_name']
-                league_rate = model_data['league_over_rate']
-                st.write(f"• {league_name}: {league_rate:.1%}")
+                if model_data['avg_cv_score'] >= 0.75:
+                    league_name = model_data['league_name']
+                    score = model_data['avg_cv_score']
+                    st.write(f"• {league_name}: F1 {score:.2f}")
         else:
             st.warning("⚠️ Modelos não treinados")
         
         st.markdown("---")
-        st.subheader("🧠 Configurações")
         
+        # Configurações otimizadas
         days_training = st.slider(
             "📊 Dias para treinamento:",
-            min_value=30,
-            max_value=730,
-            value=90,  # Mudado para 90 dias como padrão
-            step=30,
-            help="3 meses mostrou melhor performance!"
+            min_value=60,
+            max_value=120,
+            value=90,
+            help="90 dias é o ideal para máxima precisão"
         )
         
-        min_matches = st.slider(
-            "🎮 Mínimo de jogos por liga:",
-            min_value=30,
-            max_value=200,
-            value=50,
-            help="Ligas com menos jogos serão ignoradas"
+        min_confidence = st.slider(
+            "🎯 Confiança mínima:",
+            min_value=70,
+            max_value=90,
+            value=75,
+            help="75%+ para alta precisão"
         )
         
-        use_cache = st.checkbox(
-            "💾 Usar dados em cache",
-            value=True,
-            help="Recomendado para economia de tempo"
-        )
+        use_cache = st.checkbox("💾 Usar cache", value=True)
     
     # Tabs principais
-    tab1, tab2, tab3 = st.tabs(["🤖 Treinar Modelos", "📊 Análise de Ligas", "🎯 Previsões do Dia"])
+    tab1, tab2 = st.tabs(["🤖 Treinar Sistema", "🎯 Apostas do Dia"])
     
     with tab1:
-        st.header("🤖 Treinamento de Modelos por Liga")
+        st.header("🤖 Treinamento de Alta Precisão")
         
         col1, col2 = st.columns(2)
         
         with col1:
-            st.info(f"""
-            **📊 Configuração:**
-            - **{days_training} dias** de dados históricos
-            - **Mínimo {min_matches} jogos** por liga
-            - **Um modelo específico** por liga
+            st.info("""
+            **📊 Sistema Ensemble:**
+            - RandomForest + XGBoost + LightGBM
+            - Validação temporal (não aleatória)
+            - Calibração de probabilidades
+            - Features H2H e forma recente
             """)
         
         with col2:
             st.success("""
-            **🎯 Vantagens:**
-            ✅ Aprende padrões específicos de cada liga
-            ✅ Identifica "Super Times Over"
-            ✅ Maior precisão nas previsões
-            ✅ Análise detalhada por competição
+            **🎯 Filtros de Qualidade:**
+            - Mínimo 100 jogos por liga
+            - Mínimo 5 jogos por time
+            - F1-Score > 75% obrigatório
+            - Máximo 10 apostas/dia
             """)
         
-        if not st.session_state.training_in_progress:
-            if st.button("🚀 TREINAR MODELOS POR LIGA", type="primary", use_container_width=True):
-                st.session_state.training_in_progress = True
+        if st.button("🚀 TREINAR SISTEMA DE ALTA PRECISÃO", type="primary", use_container_width=True):
+            with st.spinner("📥 Carregando dados..."):
+                df = collect_historical_data_smart(days=days_training, use_cached=use_cache)
+            
+            if df.empty:
+                st.error("❌ Sem dados suficientes")
+                st.stop()
+            
+            st.success(f"✅ {len(df)} jogos carregados")
+            
+            # Agrupar por liga
+            league_groups = df.groupby(['league_id', 'league_name', 'country'])
+            
+            league_models = {}
+            successful = 0
+            
+            progress_bar = st.progress(0)
+            
+            for idx, ((league_id, league_name, country), league_df) in enumerate(league_groups):
+                progress = (idx + 1) / len(league_groups)
+                progress_bar.progress(progress)
                 
-                # Carregar dados
-                with st.spinner("📥 Carregando dados históricos..."):
-                    df = collect_historical_data_smart(days=days_training, use_cached=use_cache)
+                if len(league_df) < 100:
+                    continue
                 
-                if df.empty:
-                    st.error("❌ Não foi possível carregar dados")
-                    st.session_state.training_in_progress = False
-                    st.stop()
+                # Treinar ensemble
+                model_data, message = train_ensemble_model(league_df, league_id, f"{league_name} ({country})")
                 
-                # Mostrar resumo dos dados
-                st.success(f"✅ {len(df)} jogos carregados")
-                
-                # Treinar modelos por liga
-                st.subheader("🏆 Treinando Modelos por Liga")
-                
-                league_models, successful = train_models_by_league(df, min_matches_per_league=min_matches)
-                
-                if league_models:
-                    st.session_state.league_models = league_models
-                    st.session_state.models_trained = True
-                    
-                    st.success(f"🎉 {successful} LIGAS TREINADAS COM SUCESSO!")
-                    st.balloons()
-                else:
-                    st.error("❌ Nenhum modelo foi treinado com sucesso")
-                
-                st.session_state.training_in_progress = False
-        else:
-            st.info("🔄 Treinamento em andamento...")
+                if model_data and model_data['avg_cv_score'] >= 0.75:
+                    league_models[league_id] = model_data
+                    successful += 1
+                    st.success(f"✅ {league_name}: F1-Score {model_data['avg_cv_score']:.2f}")
+            
+            progress_bar.empty()
+            
+            if league_models:
+                st.session_state.league_models = league_models
+                st.session_state.models_trained = True
+                st.success(f"🎉 {successful} ligas com alta precisão!")
+                st.balloons()
+            else:
+                st.error("❌ Nenhum modelo atingiu precisão mínima")
     
     with tab2:
-        st.header("📊 Análise Detalhada por Liga")
+        st.header("🎯 Apostas de Alta Confiança")
         
         if not st.session_state.models_trained:
-            st.warning("⚠️ Treine os modelos primeiro!")
+            st.warning("⚠️ Treine o sistema primeiro!")
             st.stop()
         
-        display_league_analysis(st.session_state.league_models)
-    
-    with tab3:
-        st.header("🎯 Previsões do Dia")
-        
-        if not st.session_state.models_trained:
-            st.warning("⚠️ Treine os modelos primeiro!")
-            st.stop()
-        
-        # Seletor de data
-        selected_date = st.date_input(
-            "📅 Selecionar data:",
-            value=datetime.now().date(),
-            help="Escolha a data para ver as previsões"
-        )
-        
+        selected_date = st.date_input("📅 Data:", value=datetime.now().date())
         date_str = selected_date.strftime('%Y-%m-%d')
         
-        # Buscar jogos
-        with st.spinner("🔍 Buscando jogos..."):
+        with st.spinner("🔍 Analisando jogos..."):
             fixtures = get_fixtures_cached(date_str)
         
         if not fixtures:
-            st.info(f"📅 Nenhum jogo encontrado para {selected_date.strftime('%d/%m/%Y')}")
+            st.info("📅 Sem jogos hoje")
         else:
-            # Fazer previsões
-            with st.spinner("🤖 Gerando previsões com modelos específicos..."):
-                predictions = predict_matches_with_league_models(fixtures, st.session_state.league_models)
+            # Fazer previsões com filtros rigorosos
+            predictions = predict_with_confidence_filter(
+                fixtures, 
+                st.session_state.league_models, 
+                min_confidence=min_confidence
+            )
             
             if not predictions:
-                st.info("🤷 Nenhuma previsão disponível (verifique se as ligas foram treinadas)")
+                st.info("🤷 Nenhuma aposta atende aos critérios de alta confiança hoje")
             else:
-                # Estatísticas
-                total_games = len(predictions)
-                over_predictions = len([p for p in predictions if p['prediction'] == 'OVER 0.5'])
-                high_confidence = len([p for p in predictions if p['confidence'] > 70])
-                avg_confidence = sum([p['confidence'] for p in predictions]) / len(predictions)
+                st.success(f"🎯 {len(predictions)} apostas de alta confiança encontradas!")
                 
-                col1, col2, col3, col4 = st.columns(4)
-                with col1:
-                    st.metric("🎮 Total Jogos", total_games)
-                with col2:
-                    st.metric("📈 Over 0.5", over_predictions)
-                with col3:
-                    st.metric("🎯 Alta Confiança", high_confidence)
-                with col4:
-                    st.metric("💯 Confiança Média", f"{avg_confidence:.1f}%")
+                # Estatísticas
+                avg_confidence = sum(p['confidence'] for p in predictions) / len(predictions)
+                st.metric("💯 Confiança Média", f"{avg_confidence:.1f}%")
                 
                 st.markdown("---")
                 
-                # Filtros
-                st.subheader("🎯 Filtrar Previsões")
-                
-                col1, col2 = st.columns(2)
-                with col1:
-                    min_confidence = st.slider("Confiança mínima:", 50, 90, 65)
-                with col2:
-                    only_over = st.checkbox("Mostrar apenas OVER 0.5", value=True)
-                
-                # Filtrar previsões
-                filtered_predictions = predictions
-                if only_over:
-                    filtered_predictions = [p for p in filtered_predictions if p['prediction'] == 'OVER 0.5']
-                filtered_predictions = [p for p in filtered_predictions if p['confidence'] >= min_confidence]
-                
-                # Mostrar previsões
-                st.subheader(f"🏆 {len(filtered_predictions)} Jogos Selecionados")
-                
-                # Opção de visualização
-                view_mode = st.radio("Modo de visualização:", ["Cards Detalhados", "Tabela Resumida"], horizontal=True)
-                
-                if view_mode == "Cards Detalhados":
-                    for pred in filtered_predictions[:10]:  # Top 10
-                        display_prediction_card_enhanced(pred)
-                else:
-                    # Criar tabela resumida com média da liga
-                    table_data = []
-                    for pred in filtered_predictions:
-                        try:
-                            hora = pred['kickoff'][11:16]
-                        except:
-                            hora = "--:--"
-                        
-                        # Calcular se está acima da média
-                        home_rate = pred['home_team_stats']['over_rate'] * 100
-                        away_rate = pred['away_team_stats']['over_rate'] * 100
-                        avg_teams = (home_rate + away_rate) / 2
-                        league_avg = pred['league_over_rate']
-                        
-                        # Indicador visual
-                        if avg_teams > league_avg * 1.1:
-                            indicator = "✅"
-                        elif avg_teams < league_avg * 0.9:
-                            indicator = "⚠️"
-                        else:
-                            indicator = "➖"
-                        
-                        table_data.append({
-                            'Hora': hora,
-                            'Jogo': f"{pred['home_team']} vs {pred['away_team']}",
-                            'Liga': pred['league'],
-                            'Média Liga': f"{league_avg:.0f}%",
-                            'Média Times': f"{avg_teams:.0f}%",
-                            'Status': indicator,
-                            'Previsão': pred['prediction'],
-                            'Confiança': f"{pred['confidence']:.0f}%"
-                        })
-                    
-                    df_table = pd.DataFrame(table_data)
-                    
-                    # Aplicar cores condicionais
-                    def color_confidence(val):
-                        num = int(val.strip('%'))
-                        if num >= 75:
-                            return 'background-color: #90EE90'
-                        elif num >= 65:
-                            return 'background-color: #87CEEB'
-                        else:
-                            return 'background-color: #FFE4B5'
-                    
-                    styled_df = df_table.style.applymap(
-                        color_confidence, 
-                        subset=['Confiança']
-                    )
-                    
-                    st.dataframe(styled_df, use_container_width=True, hide_index=True)
-                    
-                    # Legenda
-                    st.markdown("### 📊 Legenda")
-                    col1, col2, col3 = st.columns(3)
-                    with col1:
-                        st.write("✅ = Times acima da média da liga (>10%)")
-                    with col2:
-                        st.write("➖ = Times na média da liga (±10%)")
-                    with col3:
-                        st.write("⚠️ = Times abaixo da média da liga (<10%)")
+                # Mostrar apostas
+                for pred in predictions:
+                    display_high_confidence_prediction(pred)
 
 if __name__ == "__main__":
     main()
