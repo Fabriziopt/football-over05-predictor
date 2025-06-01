@@ -144,13 +144,16 @@ def collect_historical_data_smart(days=730, use_cached=True):  # Mudado para 730
     if use_cached:
         df, message = load_historical_data()
         if df is not None:
-            # Filtrar apenas os dias necessários
-            if days < 730:
-                cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
-                if 'date' in df.columns:
-                    df_filtered = df[df['date'] >= cutoff_date].copy()
-                    return df_filtered
-            return df
+            # SEMPRE filtrar pelos dias solicitados
+            cutoff_date = (datetime.now() - timedelta(days=days)).strftime('%Y-%m-%d')
+            if 'date' in df.columns:
+                df_filtered = df[df['date'] >= cutoff_date].copy()
+                st.info(f"📊 Cache filtrado: {len(df)} jogos totais → {len(df_filtered)} jogos nos últimos {days} dias")
+                return df_filtered
+            else:
+                # Se não tem coluna date, retorna tudo mas avisa
+                st.warning("⚠️ Cache sem coluna 'date' - usando todos os dados disponíveis")
+                return df
     
     # 2. Se não encontrou cache, coletar da API
     st.warning("⚠️ Coletando dados da API - pode ser lento...")
@@ -774,7 +777,14 @@ def main():
                         st.session_state.training_in_progress = False
                         st.stop()
                     
-                    st.success(f"✅ {len(df)} jogos carregados")
+                    # Mostrar período real dos dados
+                    if 'date' in df.columns:
+                        min_date = pd.to_datetime(df['date']).min()
+                        max_date = pd.to_datetime(df['date']).max()
+                        days_range = (max_date - min_date).days
+                        st.success(f"✅ {len(df)} jogos carregados ({min_date.strftime('%d/%m/%Y')} a {max_date.strftime('%d/%m/%Y')} - {days_range} dias)")
+                    else:
+                        st.success(f"✅ {len(df)} jogos carregados")
                     
                     # Etapa 2: Treinar modelo
                     model_data, message = train_complete_model(df, update_progress)
