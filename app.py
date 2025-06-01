@@ -767,11 +767,11 @@ def predict_with_strategy(fixtures, league_models, min_confidence=60):
     
     return predictions
 
-def calculate_fair_odds(confidence_percentage):
-    """Calcula a odd justa baseada na confiança do modelo"""
+def calculate_fair_odds(poisson_probability_percentage):
+    """Calcula a odd justa baseada na probabilidade Poisson"""
     try:
-        # Converter confiança para probabilidade (0-1)
-        probability = confidence_percentage / 100
+        # Converter Poisson para probabilidade (0-1)
+        probability = poisson_probability_percentage / 100
         
         # Odd justa = 1 / probabilidade
         fair_odd = 1 / probability
@@ -837,8 +837,8 @@ def display_smart_prediction(pred):
             with col3:
                 st.metric("Gols Esperados HT", f"{pred['expected_goals_ht']:.2f}")
             with col4:
-                # Calcular e mostrar odd justa
-                fair_odd = calculate_fair_odds(pred['confidence'])
+                # Calcular e mostrar odd justa baseada no Poisson
+                fair_odd = calculate_fair_odds(pred['poisson_probability'])
                 st.metric("💰 Odd Justa", f"{fair_odd}")
             
             # Recomendação com odd justa
