@@ -7,6 +7,7 @@ import time
 import joblib
 import os
 import traceback
+from io import BytesIO
 from sklearn.model_selection import TimeSeriesSplit, train_test_split
 from sklearn.ensemble import RandomForestClassifier, GradientBoostingClassifier, ExtraTreesClassifier, VotingClassifier
 from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
@@ -766,8 +767,21 @@ def predict_with_strategy(fixtures, league_models, min_confidence=60):
     
     return predictions
 
+def calculate_fair_odds(confidence_percentage):
+    """Calcula a odd justa baseada na confiança do modelo"""
+    try:
+        # Converter confiança para probabilidade (0-1)
+        probability = confidence_percentage / 100
+        
+        # Odd justa = 1 / probabilidade
+        fair_odd = 1 / probability
+        
+        return round(fair_odd, 2)
+    except:
+        return 0.0
+
 def display_smart_prediction(pred):
-    """Exibe previsão com análise inteligente"""
+    """Exibe previsão com análise inteligente e odd justa"""
     
     try:
         with st.container():
@@ -812,9 +826,9 @@ def display_smart_prediction(pred):
                 st.write(f"- Fora: {pred['away_team_stats']['away_over_rate']*100:.1f}%")
                 st.write(f"- Força Ataque: {pred['away_team_stats']['away_attack_strength']:.2f}")
             
-            # Previsões
+            # Previsões com Odd Justa
             st.markdown("### 🎯 Análise Preditiva")
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns(4)
             
             with col1:
                 st.metric("ML Probability", f"{pred['ml_probability']:.1f}%")
@@ -822,18 +836,33 @@ def display_smart_prediction(pred):
                 st.metric("Poisson Probability", f"{pred['poisson_probability']:.1f}%")
             with col3:
                 st.metric("Gols Esperados HT", f"{pred['expected_goals_ht']:.2f}")
+            with col4:
+                # Calcular e mostrar odd justa
+                fair_odd = calculate_fair_odds(pred['confidence'])
+                st.metric("💰 Odd Justa", f"{fair_odd}")
             
-            # Recomendação
+            # Recomendação com odd justa
             if pred['prediction'] == 'OVER 0.5':
                 if pred['confidence'] > 70 and pred['game_vs_league_ratio'] > 1.1:
-                    st.success(f"✅ **APOSTAR: {pred['prediction']} HT** (Alta Confiança)")
+                    st.success(f"✅ **APOSTAR: {pred['prediction']} HT** (Alta Confiança) | **Odd Justa: {fair_odd}**")
                 else:
-                    st.info(f"📊 **Considerar: {pred['prediction']} HT** (Confiança Moderada)")
+                    st.info(f"📊 **Considerar: {pred['prediction']} HT** (Confiança Moderada) | **Odd Justa: {fair_odd}**")
             
             st.markdown("---")
             
     except Exception as e:
         st.error(f"❌ Erro ao exibir previsão: {str(e)}")
+
+def create_excel_download(df, filename):
+    """Cria arquivo Excel para download"""
+    try:
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Dados')
+        output.seek(0)
+        return output.getvalue()
+    except:
+        return None
 
 def display_league_summary(league_models):
     """Exibe resumo das ligas com visualizações simples"""
@@ -851,10 +880,13 @@ def display_league_summary(league_models):
             try:
                 league_data.append({
                     'Liga': model_data['league_name'],
-                    'Over 0.5 HT %': model_data['league_over_rate'] * 100,
+                    'Over 0.5 HT %': round(model_data['league_over_rate'] * 100, 1),
                     'Jogos': model_data['total_matches'],
-                    'F1-Score': model_data['test_metrics']['f1_score'] * 100,
-                    'Acurácia': model_data['test_metrics']['accuracy'] * 100
+                    'F1-Score': round(model_data['test_metrics']['f1_score'] * 100, 1),
+                    'Acurácia': round(model_data['test_metrics']['accuracy'] * 100, 1),
+                    'Precisão': round(model_data['test_metrics']['precision'] * 100, 1),
+                    'Recall': round(model_data['test_metrics']['recall'] * 100, 1),
+                    'Threshold Ótimo': round(model_data['best_threshold'], 3)
                 })
             except:
                 continue
@@ -865,24 +897,106 @@ def display_league_summary(league_models):
         
         df_leagues = pd.DataFrame(league_data)
         
+        # Botão de download no topo
+        col1, col2, col3 = st.columns([2, 1, 1])
+        with col2:
+            excel_data = create_excel_download(df_leagues, "analise_ligas.xlsx")
+            if excel_data:
+                st.download_button(
+                    label="📥 Download Excel - Todas as Ligas",
+                    data=excel_data,
+                    file_name=f"analise_ligas_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+        
         # Visualizações em colunas
         col1, col2 = st.columns(2)
         
         with col1:
-            st.subheader("📈 Top 10 Ligas - Taxa Over 0.5 HT")
-            top_leagues = df_leagues.sort_values('Over 0.5 HT %', ascending=False).head(10)
+            st.subheader("📈 Top 15 Ligas - Taxa Over 0.5 HT")
+            top_leagues = df_leagues.sort_values('Over 0.5 HT %', ascending=False).head(15)
             chart_data = top_leagues.set_index('Liga')['Over 0.5 HT %']
             st.bar_chart(chart_data)
+            
+            # Download Top 15
+            excel_top = create_excel_download(top_leagues, "top_15_ligas.xlsx")
+            if excel_top:
+                st.download_button(
+                    label="📥 Download Top 15 Ligas",
+                    data=excel_top,
+                    file_name=f"top_15_ligas_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
         
         with col2:
             st.subheader("🎯 Performance dos Modelos")
             performance_data = df_leagues[['Liga', 'Acurácia', 'F1-Score']].set_index('Liga')
             st.line_chart(performance_data)
+            
+            # Download Performance
+            perf_df = df_leagues[['Liga', 'Acurácia', 'F1-Score', 'Precisão', 'Recall']].sort_values('F1-Score', ascending=False)
+            excel_perf = create_excel_download(perf_df, "performance_modelos.xlsx")
+            if excel_perf:
+                st.download_button(
+                    label="📥 Download Performance",
+                    data=excel_perf,
+                    file_name=f"performance_modelos_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                )
         
         # Tabela resumo
-        st.subheader("📋 Resumo Detalhado")
-        df_display = df_leagues.sort_values('F1-Score', ascending=False).round(1)
+        st.subheader("📋 Resumo Detalhado de Todas as Ligas")
+        df_display = df_leagues.sort_values('F1-Score', ascending=False)
         st.dataframe(df_display, use_container_width=True)
+        
+        # Análise de qualidade com downloads
+        st.subheader("📊 Análise de Qualidade dos Modelos")
+        
+        high_quality = df_leagues[df_leagues['F1-Score'] >= 80]
+        medium_quality = df_leagues[(df_leagues['F1-Score'] >= 70) & (df_leagues['F1-Score'] < 80)]
+        low_quality = df_leagues[df_leagues['F1-Score'] < 70]
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            st.metric("🟢 Alta Qualidade (F1 ≥ 80%)", len(high_quality))
+            if len(high_quality) > 0:
+                excel_high = create_excel_download(high_quality, "ligas_alta_qualidade.xlsx")
+                if excel_high:
+                    st.download_button(
+                        label="📥 Download Alta Qualidade",
+                        data=excel_high,
+                        file_name=f"ligas_alta_qualidade_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="high_quality"
+                    )
+        
+        with col2:
+            st.metric("🟡 Média Qualidade (F1 70-80%)", len(medium_quality))
+            if len(medium_quality) > 0:
+                excel_med = create_excel_download(medium_quality, "ligas_media_qualidade.xlsx")
+                if excel_med:
+                    st.download_button(
+                        label="📥 Download Média Qualidade",
+                        data=excel_med,
+                        file_name=f"ligas_media_qualidade_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="medium_quality"
+                    )
+        
+        with col3:
+            st.metric("🔴 Baixa Qualidade (F1 < 70%)", len(low_quality))
+            if len(low_quality) > 0:
+                excel_low = create_excel_download(low_quality, "ligas_baixa_qualidade.xlsx")
+                if excel_low:
+                    st.download_button(
+                        label="📥 Download Baixa Qualidade",
+                        data=excel_low,
+                        file_name=f"ligas_baixa_qualidade_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        key="low_quality"
+                    )
         
     except Exception as e:
         st.error(f"❌ Erro ao exibir resumo: {str(e)}")
@@ -1193,7 +1307,7 @@ def main():
                 
                 st.markdown("---")
                 
-                # Features importantes
+                # Features importantes com download
                 st.subheader("🎯 Features Mais Importantes")
                 
                 all_features = {}
@@ -1212,11 +1326,71 @@ def main():
                     
                     df_features = pd.DataFrame(top_global_features, columns=['Feature', 'Importância'])
                     df_features['Feature'] = df_features['Feature'].str.replace('_', ' ').str.title()
+                    df_features['Importância (%)'] = df_features['Importância'] * 100
                     
+                    # Gráfico
                     chart_data = df_features.set_index('Feature')['Importância']
                     st.bar_chart(chart_data)
                     
-                    st.dataframe(df_features, use_container_width=True)
+                    # Download Features
+                    col1, col2, col3 = st.columns([1, 1, 1])
+                    with col2:
+                        excel_features = create_excel_download(df_features, "features_importantes.xlsx")
+                        if excel_features:
+                            st.download_button(
+                                label="📥 Download Features Importantes",
+                                data=excel_features,
+                                file_name=f"features_importantes_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True
+                            )
+                    
+                    # Tabela
+                    st.subheader("📊 Detalhes das Features")
+                    st.dataframe(df_features[['Feature', 'Importância (%)']], use_container_width=True)
+                
+                # Estatísticas gerais com download
+                st.subheader("📊 Estatísticas Gerais do Sistema")
+                
+                stats_data = []
+                for league_id, model_data in st.session_state.league_models.items():
+                    try:
+                        stats_data.append({
+                            'Liga': model_data['league_name'],
+                            'Total Jogos': model_data['total_matches'],
+                            'Taxa Over 0.5 HT (%)': round(model_data['league_over_rate'] * 100, 1),
+                            'Acurácia (%)': round(model_data['test_metrics']['accuracy'] * 100, 1),
+                            'Precisão (%)': round(model_data['test_metrics']['precision'] * 100, 1),
+                            'Recall (%)': round(model_data['test_metrics']['recall'] * 100, 1),
+                            'F1-Score (%)': round(model_data['test_metrics']['f1_score'] * 100, 1),
+                            'Threshold Ótimo': round(model_data['best_threshold'], 3),
+                            'Total Times': len(model_data['team_stats']),
+                            'Média Jogos por Time': round(model_data['total_matches'] / max(len(model_data['team_stats']), 1), 1)
+                        })
+                    except:
+                        continue
+                
+                if stats_data:
+                    df_stats = pd.DataFrame(stats_data)
+                    
+                    # Download estatísticas completas
+                    col1, col2, col3 = st.columns([1, 1, 1])
+                    with col2:
+                        excel_stats = create_excel_download(df_stats, "estatisticas_completas.xlsx")
+                        if excel_stats:
+                            st.download_button(
+                                label="📥 Download Estatísticas Completas",
+                                data=excel_stats,
+                                file_name=f"estatisticas_completas_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True
+                            )
+                    
+                    # Tabela resumo das estatísticas
+                    st.dataframe(df_stats.head(20), use_container_width=True)
+                    
+                    if len(df_stats) > 20:
+                        st.info(f"📊 Mostrando top 20 de {len(df_stats)} ligas. Use o download para ver todas.")
                 
             except Exception as e:
                 st.error(f"❌ Erro no dashboard: {str(e)}")
