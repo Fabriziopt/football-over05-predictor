@@ -156,122 +156,166 @@ def load_historical_data():
 def collect_historical_data_smart(days=730, use_cached=True):
     """Coleta inteligente de dados históricos"""
     
+    df_from_cache = pd.DataFrame()  # DataFrame vazio inicial
+    
     # 1. Tentar carregar do cache primeiro
     if use_cached:
-        df, message = load_historical_data()
-        if df is not None:
+        df_cache, message = load_historical_data()
+        if df_cache is not None and not df_cache.empty:
             # Converter coluna date para datetime se necessário
-            if 'date' in df.columns:
-                df['date'] = pd.to_datetime(df['date'])
+            if 'date' in df_cache.columns:
+                df_cache['date'] = pd.to_datetime(df_cache['date'])
                 
                 # Calcular data de corte corretamente
                 current_date = datetime.now()
                 cutoff_date = current_date - timedelta(days=days)
                 
                 # Filtrar dados
-                df_filtered = df[df['date'] >= cutoff_date].copy()
+                df_from_cache = df_cache[df_cache['date'] >= cutoff_date].copy()
                 
                 # Informações de debug
-                if len(df_filtered) > 0:
-                    min_date = df_filtered['date'].min()
-                    max_date = df_filtered['date'].max()
+                if len(df_from_cache) > 0:
+                    min_date = df_from_cache['date'].min()
+                    max_date = df_from_cache['date'].max()
                     actual_days = (max_date - min_date).days
-                    st.info(f"📊 Cache: {len(df)} jogos totais → {len(df_filtered)} jogos filtrados")
-                    st.info(f"📅 Período: {min_date.strftime('%d/%m/%Y')} a {max_date.strftime('%d/%m/%Y')} ({actual_days} dias)")
+                    st.info(f"📊 Cache: {len(df_cache)} jogos totais → {len(df_from_cache)} jogos filtrados")
+                    st.info(f"📅 Período no cache: {min_date.strftime('%d/%m/%Y')} a {max_date.strftime('%d/%m/%Y')} ({actual_days} dias)")
+                    
+                    # Verificar se temos dados suficientes
+                    if actual_days < (days * 0.8):  # Se temos menos de 80% do período solicitado
+                        st.warning(f"⚠️ Cache insuficiente: apenas {actual_days} dias disponíveis (solicitado: {days} dias)")
+                        st.info("📡 Buscando dados adicionais da API para completar o período...")
+                        # Continuar para buscar mais dados
+                    else:
+                        st.success(f"✅ Cache suficiente para o período solicitado!")
+                        return df_from_cache
                 else:
-                    st.warning(f"⚠️ Nenhum jogo encontrado nos últimos {days} dias")
-                
-                return df_filtered
+                    st.warning(f"⚠️ Nenhum jogo encontrado no cache para os últimos {days} dias")
             else:
-                # Se não tem coluna date, retorna tudo mas avisa
-                st.warning("⚠️ Cache sem coluna 'date' - usando todos os dados disponíveis")
-                return df
+                st.warning("⚠️ Cache sem coluna 'date' - buscando novos dados...")
     
-    # 2. Se não encontrou cache ou cache insuficiente, coletar da API
-    needs_api_data = True
-    min_required_days = days * 0.8  # Aceitar 80% do período solicitado
+    # 2. Buscar dados adicionais da API se necessário
+    st.warning("⚠️ Coletando dados da API para completar o período - pode demorar...")
     
-    if use_cached and df is not None and not df.empty:
-        if 'date' in df.columns:
-            actual_days = (df['date'].max() - df['date'].min()).days
-            if actual_days >= min_required_days:
-                needs_api_data = False
-                st.success(f"✅ Cache suficiente: {actual_days} dias disponíveis (solicitado: {days} dias)")
-            else:
-                st.warning(f"⚠️ Cache insuficiente: apenas {actual_days} dias (solicitado: {days} dias)")
-                st.info("📡 Buscando dados adicionais da API...")
+    # Determinar período que precisamos buscar
+    if not df_from_cache.empty and 'date' in df_from_cache.columns:
+        # Se temos alguns dados do cache, buscar apenas o período faltante
+        oldest_cache_date = df_from_cache['date'].min()
+        days_to_fetch = (datetime.now() - oldest_cache_date).days
+        st.info(f"📅 Buscando dados adicionais para completar {days} dias")
+    else:
+        # Se não temos nada, buscar todo o período
+        days_to_fetch = days
+        st.info(f"📅 Buscando {days} dias de dados históricos")
     
-    if needs_api_data:
-        st.warning("⚠️ Coletando dados da API - pode ser lento...")
-        
-        # Amostragem inteligente para 2 anos
-        sample_days = []
-        
-        # Últimos 30 dias completos
-        for i in range(30):
-            sample_days.append(i + 1)
-        
+    # Amostragem inteligente para o período necessário
+    sample_days = []
+    
+    # Últimos 30 dias completos
+    for i in range(min(30, days_to_fetch)):
+        sample_days.append(i + 1)
+    
+    # Se precisamos de mais dias
+    if days_to_fetch > 30:
         # Próximos 60 dias: a cada 2 dias
-        for i in range(30, 90, 2):
+        for i in range(30, min(90, days_to_fetch), 2):
             sample_days.append(i + 1)
-        
-        # Próximos 180 dias: a cada 3 dias
-        for i in range(90, 270, 3):
-            sample_days.append(i + 1)
-        
-        # Próximos 365 dias: a cada 5 dias
-        for i in range(270, 365, 5):
-            sample_days.append(i + 1)
-        
-        # Restante até 2 anos: a cada 7 dias
-        for i in range(365, days, 7):
-            sample_days.append(i + 1)
-        
-        all_data = []
-        progress_bar = st.progress(0)
-        
-        for idx, day_offset in enumerate(sample_days):
-            date = datetime.now() - timedelta(days=day_offset)
-            date_str = date.strftime('%Y-%m-%d')
-            
-            try:
-                fixtures = get_fixtures_cached(date_str)
-                
-                if fixtures:
-                    for match in fixtures:
-                        try:
-                            if match['fixture']['status']['short'] == 'FT' and match.get('score', {}).get('halftime'):
-                                match_data = extract_match_features(match)
-                                if match_data:
-                                    all_data.append(match_data)
-                        except:
-                            continue
-            except:
-                continue
-            
-            # Atualizar progresso
-            progress = (idx + 1) / len(sample_days)
-            progress_bar.progress(progress)
-            
-            if idx % 5 == 0:  # Pausa a cada 5 requests
-                time.sleep(0.3)
-        
-        progress_bar.empty()
-        
-        # Salvar em cache
-        if len(all_data) > 50:
-            try:
-                df_new = pd.DataFrame(all_data)
-                cache_file = "data/historical_matches_cache.parquet"
-                os.makedirs("data", exist_ok=True)
-                df_new.to_parquet(cache_file)
-                st.success(f"💾 Novo cache salvo com {len(df_new)} jogos")
-            except:
-                pass
-        
-        return pd.DataFrame(all_data)
     
-    return df
+    if days_to_fetch > 90:
+        # Próximos 180 dias: a cada 3 dias
+        for i in range(90, min(270, days_to_fetch), 3):
+            sample_days.append(i + 1)
+    
+    if days_to_fetch > 270:
+        # Próximos 365 dias: a cada 5 dias
+        for i in range(270, min(365, days_to_fetch), 5):
+            sample_days.append(i + 1)
+    
+    if days_to_fetch > 365:
+        # Restante até 2 anos: a cada 7 dias
+        for i in range(365, days_to_fetch, 7):
+            sample_days.append(i + 1)
+    
+    all_data = []
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
+    for idx, day_offset in enumerate(sample_days):
+        date = datetime.now() - timedelta(days=day_offset)
+        date_str = date.strftime('%Y-%m-%d')
+        
+        # Atualizar status
+        status_text.text(f"📅 Buscando dados de {date_str}...")
+        
+        try:
+            fixtures = get_fixtures_cached(date_str)
+            
+            if fixtures:
+                for match in fixtures:
+                    try:
+                        if match['fixture']['status']['short'] == 'FT' and match.get('score', {}).get('halftime'):
+                            match_data = extract_match_features(match)
+                            if match_data:
+                                all_data.append(match_data)
+                    except:
+                        continue
+        except:
+            continue
+        
+        # Atualizar progresso
+        progress = (idx + 1) / len(sample_days)
+        progress_bar.progress(progress)
+        
+        if idx % 5 == 0:  # Pausa a cada 5 requests
+            time.sleep(0.3)
+    
+    progress_bar.empty()
+    status_text.empty()
+    
+    # Combinar dados do cache com novos dados
+    if all_data:
+        df_api = pd.DataFrame(all_data)
+        df_api['date'] = pd.to_datetime(df_api['date'])
+        
+        if not df_from_cache.empty:
+            # Combinar e remover duplicatas
+            df_combined = pd.concat([df_from_cache, df_api], ignore_index=True)
+            # Remover duplicatas baseado em data, home_team_id e away_team_id
+            df_combined = df_combined.drop_duplicates(subset=['date', 'home_team_id', 'away_team_id'], keep='first')
+        else:
+            df_combined = df_api
+        
+        # Aplicar filtro de data novamente
+        current_date = datetime.now()
+        cutoff_date = current_date - timedelta(days=days)
+        df_final = df_combined[df_combined['date'] >= cutoff_date].copy()
+        
+        # Salvar cache atualizado
+        try:
+            cache_file = "data/historical_matches_cache.parquet"
+            os.makedirs("data", exist_ok=True)
+            df_combined.to_parquet(cache_file)  # Salvar todos os dados
+            st.success(f"💾 Cache atualizado com {len(df_combined)} jogos totais")
+        except Exception as e:
+            st.warning(f"⚠️ Erro ao salvar cache: {str(e)}")
+        
+        # Mostrar resumo final
+        if len(df_final) > 0:
+            min_date = df_final['date'].min()
+            max_date = df_final['date'].max()
+            actual_days = (max_date - min_date).days
+            st.success(f"✅ Total carregado: {len(df_final)} jogos")
+            st.success(f"📅 Período final: {min_date.strftime('%d/%m/%Y')} a {max_date.strftime('%d/%m/%Y')} ({actual_days} dias)")
+        
+        return df_final
+    else:
+        # Se não conseguiu buscar nada da API, retornar o que tem do cache
+        if not df_from_cache.empty:
+            st.warning("⚠️ Não foi possível buscar dados adicionais da API. Usando apenas cache disponível.")
+            return df_from_cache
+        else:
+            st.error("❌ Não foi possível carregar dados suficientes")
+            return pd.DataFrame()
 
 def extract_match_features(match):
     """Extrai features básicas do jogo"""
